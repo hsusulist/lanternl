@@ -1,4 +1,4 @@
-local ai = {}
+local lanternl = {}
 
 local function safe_require(name)
     local ok, lib = pcall(require, name)
@@ -26,4 +26,4 @@ for upper_name, file_name in pairs(modules) do
     ai[file_name]  = lib 
 end
 
-return ai
+return lanternl
