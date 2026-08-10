@@ -1,0 +1,181 @@
+local tokenizer = {}
+tokenizer.__index = tokenizer
+
+local function to_chars(word)
+    local chars = {}
+    for _, code in utf8.codes(word) do
+        table.insert(chars, utf8.char(code))
+    end
+    return chars
+end
+
+local function split_key(key)
+    local t = {}
+    for tok in key:gmatch("%S+") do table.insert(t, tok) end
+    return t
+end
+
+function tokenizer.new(config)
+    local self = setmetatable({}, tokenizer)
+
+    self.text = config.text
+    self.text_file = config.text_file
+    self.vocab_size = config.vocab_size or 500
+    self.min_frequency = config.min_frequency or 2
+    self.special_tokens = config.special_tokens or {"<pad>", "<s>", "</s>", "<unk>"}
+    self.log_every = config.log_every or 50
+    self.verbose = (config.verbose == nil) and true or config.verbose
+
+    self.merges = {}
+
+    return self
+end
+
+function tokenizer:log(msg)
+    if self.verbose then print(msg) end
+end
+
+function tokenizer:train()
+    local text = self.text
+    if not text and self.text_file then
+        local f = io.open(self.text_file, "r")
+        text = f:read("*a")
+        f:close()
+    end
+    assert(text, "tokenizer: need config.text or config.text_file")
+
+    local word_freqs = {}
+    for word in text:gmatch("%S+") do
+        local chars = to_chars(word)
+        table.insert(chars, "</w>")
+        local key = table.concat(chars, " ")
+        word_freqs[key] = (word_freqs[key] or 0) + 1
+    end
+
+    local unique_count = 0
+    for _ in pairs(word_freqs) do unique_count = unique_count + 1 end
+    self:log(string.format("Unique words: %d", unique_count))
+
+    while true do
+        local vocab = {}
+        for key, _ in pairs(word_freqs) do
+            for _, tok in ipairs(split_key(key)) do
+                vocab[tok] = true
+            end
+        end
+        local vocab_count = 0
+        for _ in pairs(vocab) do vocab_count = vocab_count + 1 end
+
+        if vocab_count >= self.vocab_size then
+            self:log(string.format("Reached vocab size: %d", vocab_count))
+            break
+        end
+
+        local pair_counts = {}
+        for key, freq in pairs(word_freqs) do
+            local tokens = split_key(key)
+            for i = 1, #tokens - 1 do
+                local pair_key = tokens[i] .. "\1" .. tokens[i+1]
+                pair_counts[pair_key] = (pair_counts[pair_key] or 0) + freq
+            end
+        end
+
+        local best_pair, best_count = nil, 0
+        for pair_key, count in pairs(pair_counts) do
+            if count > best_count then
+                best_count = count
+                best_pair = pair_key
+            end
+        end
+
+        if not best_pair or best_count < self.min_frequency then
+            self:log("No more useful merges, stopping early.")
+            break
+        end
+
+        local a, b = best_pair:match("^(.-)\1(.+)$")
+        table.insert(self.merges, {a, b})
+
+        local new_word_freqs = {}
+        for key, freq in pairs(word_freqs) do
+            local tokens = split_key(key)
+            local new_tokens = {}
+            local i = 1
+            while i <= #tokens do
+                if i < #tokens and tokens[i] == a and tokens[i+1] == b then
+                    table.insert(new_tokens, a .. b)
+                    i = i + 2
+                else
+                    table.insert(new_tokens, tokens[i])
+                    i = i + 1
+                end
+            end
+            local new_key = table.concat(new_tokens, " ")
+            new_word_freqs[new_key] = (new_word_freqs[new_key] or 0) + freq
+        end
+        word_freqs = new_word_freqs
+
+        if #self.merges % self.log_every == 0 then
+            self:log(string.format("Merge #%d: '%s' + '%s' (count=%d)", #self.merges, a, b, best_count))
+        end
+    end
+
+    return self
+end
+
+function tokenizer:encode(text)
+    local result = {}
+    for word in text:gmatch("%S+") do
+        local tokens = to_chars(word)
+        table.insert(tokens, "</w>")
+
+        for _, merge in ipairs(self.merges) do
+            local a, b = merge[1], merge[2]
+            local new_tokens = {}
+            local i = 1
+            while i <= #tokens do
+                if i < #tokens and tokens[i] == a and tokens[i+1] == b then
+                    table.insert(new_tokens, a .. b)
+                    i = i + 2
+                else
+                    table.insert(new_tokens, tokens[i])
+                    i = i + 1
+                end
+            end
+            tokens = new_tokens
+        end
+
+        for _, t in ipairs(tokens) do
+            table.insert(result, t)
+        end
+    end
+    return result
+end
+
+function tokenizer:save(path)
+    local f = io.open(path, "w")
+    for _, m in ipairs(self.merges) do
+        f:write(m[1] .. "\t" .. m[2] .. "\n")
+    end
+    f:close()
+    self:log("Saved to " .. path)
+end
+
+function tokenizer:load(path)
+    self.merges = {}
+    for line in io.lines(path) do
+        local a, b = line:match("^(.-)\t(.+)$")
+        table.insert(self.merges, {a, b})
+    end
+    self:log("Loaded from " .. path)
+    return self
+end
+
+function tokenizer:print(tokens)
+    for _, t in ipairs(tokens) do
+        io.write("[" .. t .. "] ")
+    end
+    print()
+end
+
+return tokenizer
