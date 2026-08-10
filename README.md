@@ -100,23 +100,3 @@ trainer:config{
     end
 }
 ```
-
-## Project structure
-lanternl/
-├── lanternl.lua # Main entry point — require this
-├── core/
-│ ├── matrix.lua
-│ ├── tensor.lua # scalar autograd engine
-│ └── tensor2.lua # vectorized autograd engine
-├── nn/
-│ ├── nn.lua # Neuron / Layer / MLP
-│ ├── embedding.lua
-│ ├── positional.lua
-│ └── model.lua
-├── data/
-│ ├── tokenizer.lua # BPE tokenizer
-│ └── data.lua # dataset loader
-├── optim/
-│ └── optim.lua # SGD optimizer
-└── core/
-└── train.lua # training loop
