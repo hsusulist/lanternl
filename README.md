@@ -20,30 +20,103 @@ Most AI/ML tooling lives in Python. `lanternl` brings the same workflow — toke
 
 ## Quick start
 
+### 1. Require the library
+
 ```lua
 local lanternl = require("lanternl")
+```
 
--- Tokenizer
+That's the only line you need — everything else (`Tokenizer`, `Data`, `Train`, `Model`...) lives inside `lanternl`.
+
+### 2. Tokenizer — turn text into tokens
+
+```lua
 local tok = lanternl.Tokenizer.new{
     text = "hello world this is my dataset",
     vocab_size = 60,
 }
-tok:train()
-local ids = tok:encode("hello world")
-tok:print(ids)
 
--- Training
+tok:train()
+
+local ids = tok:encode("hello world")
+tok:print(ids)   -- [he] [l] [l] [o] [</w>] [w] [or] [l] [d] [</w>]
+
+tok:save("merges.txt")   -- save so you don't have to retrain later
+```
+
+To train on a larger text file instead of typing text directly:
+
+```lua
+local tok = lanternl.Tokenizer.new{
+    text_file = "my_dataset.txt",
+    vocab_size = 2000,
+}
+```
+
+### 3. Data — pull a dataset (from Hugging Face)
+
+```lua
+local data = lanternl.Data("wikitext/wikitext-2-v1", "500MB")
+
+data:config{
+    batch_size = 8,
+    shuffle = true,
+    tokenizer = tok,   -- auto-encodes using the tokenizer trained in step 2
+}
+
+local batches = data:batches()
+```
+
+`"500MB"` caps how much gets downloaded — swap in `"1GB"`, `"100 pairs"`, etc. to avoid pulling a huge dataset by accident.
+
+### 4. Train — train a model
+
+```lua
 local trainer = lanternl.Train{
-    layers = {4, 8, 3},
+    layers = {4, 8, 3},   -- architecture: input -> hidden -> output
     data = {
         {input = {1,0,0,0}, target = {1,0,0}},
         {input = {0,1,0,0}, target = {1,0,0}},
         {input = {0,0,1,0}, target = {0,1,0}},
         {input = {0,0,0,1}, target = {0,0,1}},
-    }
+    },
+    epochs = 200,
+    lr = 0.05,
 }
+
 trainer:run()
 trainer:evaluate()
 ```
 
+Logging comes with a progress bar out of the box:
+[####----------------] Epoch 40/200 | Loss: 0.04661 (best)
+
+
+Want your own custom logging instead:
+```lua
+trainer:config{
+    on_log = function(info)
+        print("Epoch " .. info.epoch .. " loss=" .. info.loss)
+    end
+}
+```
+
 ## Project structure
+lanternl/
+├── lanternl.lua # Main entry point — require this
+├── core/
+│ ├── matrix.lua
+│ ├── tensor.lua # scalar autograd engine
+│ └── tensor2.lua # vectorized autograd engine
+├── nn/
+│ ├── nn.lua # Neuron / Layer / MLP
+│ ├── embedding.lua
+│ ├── positional.lua
+│ └── model.lua
+├── data/
+│ ├── tokenizer.lua # BPE tokenizer
+│ └── data.lua # dataset loader
+├── optim/
+│ └── optim.lua # SGD optimizer
+└── core/
+└── train.lua # training loop
