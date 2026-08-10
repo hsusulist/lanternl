@@ -100,3 +100,10 @@ trainer:config{
     end
 }
 ```
+## Status
+
+🚧 Work in progress — currently building Transformer components (attention, RMSNorm, RoPE) for full language model support.
+
+## Author
+
+Built by [hsusulist](https://github.com/hsusulist)
