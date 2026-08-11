@@ -1,5 +1,11 @@
 local matrix = {}
 
+local ok_gpu, gpu = pcall(require, "gpu")
+if not ok_gpu then gpu = { available = false } end
+
+local ok_blas, blas = pcall(require, "blas")
+if not ok_blas then blas = { available = false } end
+
 function matrix.new(rows, cols)
     local m = {rows = rows, cols = cols, data = {}}
     local total = rows * cols
@@ -64,6 +70,17 @@ end
 
 function matrix.multiply(a, b)
     assert(a.cols == b.rows, "multiply: a.cols must equal b.rows")
+
+    if gpu.available then
+        local result_flat = gpu.matmul(a.data, a.rows, a.cols, b.data, b.cols)
+        return { rows = a.rows, cols = b.cols, data = result_flat }
+    end
+
+    if blas.available then
+        local result_flat = blas.matmul(a.data, a.rows, a.cols, b.data, b.cols)
+        return { rows = a.rows, cols = b.cols, data = result_flat }
+    end
+
     local result = matrix.new(a.rows, b.cols)
     local ad, bd, rd = a.data, b.data, result.data
     local acols, bcols = a.cols, b.cols
