@@ -29,7 +29,10 @@ local modules = {
     Model       = "model",
     NN          = "nn",
     Optim       = "optim",
+    Optim2      = "optim2",
     Train       = "train",
+    GPU         = "gpu",
+    BLAS        = "blas",
 }
 
 for upper_name, file_name in pairs(modules) do
