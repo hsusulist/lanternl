@@ -3,8 +3,8 @@ tokenizer.__index = tokenizer
 
 local function to_chars(word)
     local chars = {}
-    for _, code in utf8.codes(word) do
-        table.insert(chars, utf8.char(code))
+    for i = 1, #word do
+        table.insert(chars, word:sub(i, i))
     end
     return chars
 end
