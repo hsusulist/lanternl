@@ -1,7 +1,7 @@
 local Tensor = require("tensor2")
 local Attention = require("attention")
-local RMSNorm = require("nn.rmsnorm")
-local SwiGLU = require("nn.swiglu")
+local RMSNorm = require("rmsnorm")
+local SwiGLU = require("swiglu")
 
 local Block = {}
 Block.__index = Block
