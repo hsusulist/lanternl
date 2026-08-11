@@ -4,7 +4,7 @@ package.path = package.path
     .. ";./ai/data/?.lua"
     .. ";./ai/optim/?.lua"
 
-local lanternl = {}
+local ai = {}
 
 local function safe_require(name)
     local ok, lib = pcall(require, name)
@@ -29,13 +29,16 @@ local modules = {
     Model       = "model",
     NN          = "nn",
     Optim       = "optim",
+    Optim2      = "optim2",
     Train       = "train",
+    GPU         = "gpu",
+    BLAS        = "blas",
 }
 
 for upper_name, file_name in pairs(modules) do
     local lib = safe_require(file_name)
-    lanternl[upper_name] = lib
-    lanternl[file_name]  = lib
+    ai[upper_name] = lib
+    ai[file_name]  = lib
 end
 
-return lanternl
+return ai
