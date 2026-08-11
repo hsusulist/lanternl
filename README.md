@@ -69,40 +69,40 @@ local batches = data:batches()
 
 `"500MB"` caps how much gets downloaded — swap in `"1GB"`, `"100 pairs"`, etc. to avoid pulling a huge dataset by accident.
 
-### 4. Train — train a model
+### 4. Train — Ultra-Flexible Training API
 
+**Option A: The Lazy Way (Instant Setup)**
 ```lua
-local trainer = lanternl.Train{
-    layers = {4, 8, 3},   -- architecture: input -> hidden -> output
-    data = {
-        {input = {1,0,0,0}, target = {1,0,0}},
-        {input = {0,1,0,0}, target = {1,0,0}},
-        {input = {0,0,1,0}, target = {0,1,0}},
-        {input = {0,0,0,1}, target = {0,0,1}},
-    },
-    epochs = 200,
-    lr = 0.05,
+local ai = require("lanternl")
+
+local train = ai.LMTrain{
+    e = 200,   -- 'e' or 'epochs'
+    data = {2, 5, 8, 3, 9, 1, 4, 7, 6, 10},
 }
 
-trainer:run()
-trainer:evaluate()
-```
+train:run()
+Option B: Model Config + Advanced Early Stopping
 
-Logging comes with a progress bar out of the box:
-[####----------------] Epoch 40/200 | Loss: 0.04661 (best)
+Lua
+local train = ai.LMTrain{
+    vocab = 30, dim = 16, layers = 2, heads = 4, ffn = 32,
+    e = 500,
+    data = {2, 5, 8, 3, 9, 1, 4, 7, 6, 10},
+    stop_loss = 0.01,  -- Auto-stop when loss hits target
+}
 
+-- Custom Progress Bar style (e.g. ▓▓▓░░░)
+train:config{ bar = 2 }
 
-Want your own custom logging instead:
-```lua
-trainer:config{
-    on_log = function(info)
-        print("Epoch " .. info.epoch .. " loss=" .. info.loss)
+-- Custom Logger using live state (t.loss, t.epoch)
+train:config{
+    log = function(t)
+        print("Epoch: " .. t.epoch .. " | Loss: " .. t.loss)
     end
 }
-```
 ## Status
 
-🚧 Work in progress — currently building Transformer components (attention, RMSNorm, RoPE) for full language model support.
+🚧 Work in progress — currently testing and upgrading
 
 ## Author
 
