@@ -19,7 +19,7 @@ function Attention.new(config)
     self.heads = config.heads or DEFAULTS.heads
     assert(self.dim % self.heads == 0, "Attention: dim must be divisible by heads")
 
-    self.head_dim = self.dim // self.heads
+    self.head_dim = self.dim / self.heads
     self.scale = config.scale or (1 / math.sqrt(self.head_dim))
 
     self.q_proj = Linear.new{ in_dim = self.dim, out_dim = self.dim }

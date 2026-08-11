@@ -234,6 +234,59 @@ function Tensor.mul(a, b)
     return out
 end
 
+-- Cross-entropy loss for language modeling.
+-- logits: Tensor (seq_len x vocab), target_ids: list of correct token ids (1-indexed), one per row.
+-- Returns a scalar Tensor (1x1) holding the mean loss across the sequence.
+function Tensor.cross_entropy(logits, target_ids)
+    local rows, cols = logits.data.rows, logits.data.cols
+    local softmax_vals = matrix.new(rows, cols)
+    local total_loss = 0
+
+    for i = 1, rows do
+        local base = (i - 1) * cols
+        local max_val = -math.huge
+        for j = 1, cols do
+            local v = logits.data.data[base + j]
+            if v > max_val then max_val = v end
+        end
+
+        local sum = 0
+        for j = 1, cols do
+            local e = math.exp(logits.data.data[base + j] - max_val)
+            softmax_vals.data[base + j] = e
+            sum = sum + e
+        end
+        for j = 1, cols do
+            softmax_vals.data[base + j] = softmax_vals.data[base + j] / sum
+        end
+
+        local target = target_ids[i]
+        local p_target = softmax_vals.data[base + target]
+        total_loss = total_loss - math.log(p_target + 1e-12)
+    end
+
+    local mean_loss = total_loss / rows
+
+    local out_data = matrix.new(1, 1)
+    out_data.data[1] = mean_loss
+    local out = Tensor.new(out_data, {logits}, "cross_entropy")
+
+    out.backward_fn = function()
+        local g = out.grad.data[1] / rows
+        for i = 1, rows do
+            local base = (i - 1) * cols
+            local target = target_ids[i]
+            for j = 1, cols do
+                local grad_val = softmax_vals.data[base + j]
+                if j == target then grad_val = grad_val - 1 end
+                logits.grad.data[base + j] = logits.grad.data[base + j] + grad_val * g
+            end
+        end
+    end
+
+    return out
+end
+
 function Tensor:backward()
     local topo = {}
     local visited = {}
