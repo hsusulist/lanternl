@@ -34,8 +34,8 @@ local modules = {
 
 for upper_name, file_name in pairs(modules) do
     local lib = safe_require(file_name)
-    ai[upper_name] = lib
-    ai[file_name]  = lib
+    lanternl[upper_name] = lib
+    lanternl[file_name]  = lib
 end
 
 return lanternl
