@@ -44,30 +44,95 @@ for upper_name, file_name in pairs(modules) do
 end
 
 function ai.help()
+    -- Using [=[ ]=] so we can use [[ ]] inside the string if needed
     print([=[
-=== lanternl quick guide ===
+====================================================================
+  🏮 LANTERNL: The Pure-Lua AI Ecosystem
+  No Python. No bloat. Just LuaJIT and CUDA.
+====================================================================
 
-TOKENIZER:
-local tok = ai.Tokenizer.new{ text = "hello world", vocab_size = 60 }
+1. THE 5-SECOND QUICKSTART (Text to AI)
+--------------------------------------------------------------------
+local ai = require("ai")
+
+-- Pass a string, auto-size the AI, train, and generate!
+local model = ai.LMTrain {
+    data = "hello world, this is lua ai!",
+    preset = "auto",   -- Automatically picks model dimensions
+    epochs = 300
+}
+
+model:run() -- Watch the progress bar!
+
+-- Give it a seed, and it generates text!
+print( model:generate("hello", 10) )
+
+
+2. DOWNLOADING REAL DATA (HuggingFace)
+--------------------------------------------------------------------
+-- Auto-discovers files, reads Parquet/CSV/TXT, limits to 500MB
+local dataset = ai.Data("your_username/your_dataset", "500MB")
+
+-- Config your batch size and attach a tokenizer
+local tok = ai.Tokenizer.new { text_file = dataset.files[1], vocab_size = 1000 }
 tok:train()
-tok:encode("hello")
 
-TRAIN A LANGUAGE MODEL:
-local train = ai.LMTrain{ data = "hello world", e = 200 }
-train:run()
-train:generate("hel", 10)
+dataset:config { batch_size = 8, tokenizer = tok }
+local batches = dataset:batches()
 
-CONFIG (anytime after creation):
-train:config{ lr = 0.01, stop_loss = 0.01 }
-train:bar{ style = 2 }
 
-DATA (pull from Hugging Face):
-local data = ai.Data("wikitext/wikitext-2-v1", "500MB")
-data:config{ batch_size = 8, tokenizer = tok }
-data:batches()
+3. ADVANCED TRAINING & EARLY STOPPING
+--------------------------------------------------------------------
+local trainer = ai.LMTrain {
+    data = "your data here",
+    epochs = 1000,
+    lr = 0.01,
+    lr_decay = true,     -- Slow down learning over time
+    stop_loss = 0.05,    -- Stop if loss hits 0.05
+    patience = 50,       -- Stop if no improvement for 50 epochs
+    bar_style = 2,       -- 1=#, 2=▓▒, 3==
+    every = 10           -- Print progress every 10 epochs
+}
 
-CHECK GPU/BACKEND STATUS:
-for _, b in ipairs(ai.Matrix.backends()) do print(b.name, b.available, b.reason) end
+-- Custom Logging (access internal state)
+trainer:config {
+    log = function(t)
+        print(string.format("Epoch %d | Acc: %.1f%%", t.epoch, t.accuracy))
+    end
+}
+
+trainer:run()
+
+
+4. SAVE, LOAD, AND PUSH TO HUGGINGFACE
+--------------------------------------------------------------------
+trainer:save("my_lua_model.txt")
+trainer:load("my_lua_model.txt")
+
+-- Push your trained model back to HuggingFace Hub!
+trainer:push("your_username/your_model_repo", "hf_your_token_here")
+
+
+5. CHECK GPU / HARDWARE STATUS
+--------------------------------------------------------------------
+-- See if your CUDA (luaTL) or BLAS backends loaded successfully
+for _, b in ipairs(ai.Matrix.backends()) do
+    print(string.format("Backend: %-15s | Available: %-5s | Reason: %s", 
+          b.name, tostring(b.available), b.reason))
+end
+
+
+6. CORE MODULES REFERENCE (ai.X)
+--------------------------------------------------------------------
+  ai.LMTrain      : High-level Trainer & Generator
+  ai.Data         : Dataset downloader & batcher
+  ai.Tokenizer    : BPE Tokenizer (train, encode, decode)
+  ai.Transformer  : Raw Transformer model architecture
+  ai.Matrix       : CPU/GPU Matrix math engine
+  ai.Optim2       : Optimizers (SGD, AdamW, etc.)
+
+Type `ai.h()` to see this menu anytime!
+====================================================================
 ]=])
 end
 
