@@ -34,7 +34,7 @@ function Tensor.random(rows, cols, scale)
 end
 
 function Tensor.add(a, b)
-    local out = Tensor.new(matrix.add(a.data, b.data), {a, b}, "+")
+    local out = Tensor.new(matrix.add(a.data, b.data), { a, b }, "+")
     out.backward_fn = function()
         local total = out.grad.rows * out.grad.cols
         for k = 1, total do
@@ -46,7 +46,7 @@ function Tensor.add(a, b)
 end
 
 function Tensor.matmul(a, b)
-    local out = Tensor.new(matrix.multiply(a.data, b.data), {a, b}, "matmul")
+    local out = Tensor.new(matrix.multiply(a.data, b.data), { a, b }, "matmul")
     out.backward_fn = function()
         local bt = matrix.transpose(b.data)
         local at = matrix.transpose(a.data)
@@ -77,7 +77,7 @@ function Tensor.relu(a)
         mask[k] = v > 0 and 1 or 0
     end
 
-    local out = Tensor.new(out_data, {a}, "relu")
+    local out = Tensor.new(out_data, { a }, "relu")
     out.backward_fn = function()
         for k = 1, total do
             a.grad.data[k] = a.grad.data[k] + mask[k] * out.grad.data[k]
@@ -86,7 +86,6 @@ function Tensor.relu(a)
     return out
 end
 
--- Row-wise softmax: each row sums to 1 (used for attention scores)
 function Tensor.softmax_rows(a)
     local rows, cols = a.data.rows, a.data.cols
     local out_data = matrix.new(rows, cols)
@@ -95,27 +94,27 @@ function Tensor.softmax_rows(a)
         out_data.data = luatl_adapter.softmax(a.data.data, rows, cols)
     else
         for i = 1, rows do
-        local base = (i - 1) * cols
-        local max_val = -math.huge
-        for j = 1, cols do
-            local v = a.data.data[base + j]
-            if v > max_val then max_val = v end
-        end
+            local base = (i - 1) * cols
+            local max_val = -math.huge
+            for j = 1, cols do
+                local v = a.data.data[base + j]
+                if v > max_val then max_val = v end
+            end
 
-        local sum = 0
-        for j = 1, cols do
-            local e = math.exp(a.data.data[base + j] - max_val)
-            out_data.data[base + j] = e
-            sum = sum + e
-        end
+            local sum = 0
+            for j = 1, cols do
+                local e = math.exp(a.data.data[base + j] - max_val)
+                out_data.data[base + j] = e
+                sum = sum + e
+            end
 
-        for j = 1, cols do
-            out_data.data[base + j] = out_data.data[base + j] / sum
-        end
+            for j = 1, cols do
+                out_data.data[base + j] = out_data.data[base + j] / sum
+            end
         end
     end
 
-    local out = Tensor.new(out_data, {a}, "softmax")
+    local out = Tensor.new(out_data, { a }, "softmax")
     out.backward_fn = function()
         for i = 1, rows do
             local base = (i - 1) * cols
@@ -132,7 +131,6 @@ function Tensor.softmax_rows(a)
     return out
 end
 
--- Slice columns [start_col, end_col] out of a tensor (used to split heads)
 function Tensor.slice_cols(a, start_col, end_col)
     local rows = a.data.rows
     local width = end_col - start_col + 1
@@ -146,7 +144,7 @@ function Tensor.slice_cols(a, start_col, end_col)
         end
     end
 
-    local out = Tensor.new(out_data, {a}, "slice_cols")
+    local out = Tensor.new(out_data, { a }, "slice_cols")
     out.backward_fn = function()
         for i = 1, rows do
             local src_base = (i - 1) * a.grad.cols
@@ -160,7 +158,6 @@ function Tensor.slice_cols(a, start_col, end_col)
     return out
 end
 
--- Concatenate a list of tensors column-wise (used to merge heads back together)
 function Tensor.concat_cols(tensors)
     local rows = tensors[1].data.rows
     local total_cols = 0
@@ -197,7 +194,6 @@ function Tensor.concat_cols(tensors)
     return out
 end
 
--- SiLU (Swish) activation: x * sigmoid(x)
 function Tensor.silu(a)
     local total = a.data.rows * a.data.cols
     local out_data = matrix.new(a.data.rows, a.data.cols)
@@ -210,7 +206,7 @@ function Tensor.silu(a)
         out_data.data[k] = v * sig
     end
 
-    local out = Tensor.new(out_data, {a}, "silu")
+    local out = Tensor.new(out_data, { a }, "silu")
     out.backward_fn = function()
         for k = 1, total do
             local v = a.data.data[k]
@@ -222,7 +218,6 @@ function Tensor.silu(a)
     return out
 end
 
--- Elementwise multiply (Hadamard product), same shape tensors
 function Tensor.mul(a, b)
     local total = a.data.rows * a.data.cols
     local out_data = matrix.new(a.data.rows, a.data.cols)
@@ -230,7 +225,7 @@ function Tensor.mul(a, b)
         out_data.data[k] = a.data.data[k] * b.data.data[k]
     end
 
-    local out = Tensor.new(out_data, {a, b}, "mul")
+    local out = Tensor.new(out_data, { a, b }, "mul")
     out.backward_fn = function()
         for k = 1, total do
             a.grad.data[k] = a.grad.data[k] + b.data.data[k] * out.grad.data[k]
@@ -240,9 +235,6 @@ function Tensor.mul(a, b)
     return out
 end
 
--- Cross-entropy loss for language modeling.
--- logits: Tensor (seq_len x vocab), target_ids: list of correct token ids (1-indexed), one per row.
--- Returns a scalar Tensor (1x1) holding the mean loss across the sequence.
 function Tensor.cross_entropy(logits, target_ids)
     local rows, cols = logits.data.rows, logits.data.cols
     local softmax_vals = matrix.new(rows, cols)
@@ -275,7 +267,7 @@ function Tensor.cross_entropy(logits, target_ids)
 
     local out_data = matrix.new(1, 1)
     out_data.data[1] = mean_loss
-    local out = Tensor.new(out_data, {logits}, "cross_entropy")
+    local out = Tensor.new(out_data, { logits }, "cross_entropy")
 
     out.backward_fn = function()
         local g = out.grad.data[1] / rows

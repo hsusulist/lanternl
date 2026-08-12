@@ -1,3 +1,4 @@
+-- keep just for fun
 local Value = require("tensor")
 local nn = require("nn")
 local optim = require("optim")
@@ -54,12 +55,10 @@ local function mse_loss(out, target)
     return loss
 end
 
--- Plain text message (headers, info lines)
 function Train:log(msg)
     if self.verbose then print(msg) end
 end
 
--- Default loss logger for beginners: epoch, loss, progress bar, best marker
 local function default_on_log(info)
     local bar_len = 20
     local filled = math.floor(info.progress * bar_len)

@@ -3,7 +3,7 @@ Data.__index = Data
 
 local function file_exists(path)
     local f = io.open(path, "r")
-    if f ~= nil then 
+    if f ~= nil then
         local size = f:seek("end")
         io.close(f)
         return size > 0
@@ -12,24 +12,26 @@ local function file_exists(path)
 end
 
 local function format_bytes(bytes)
-    if bytes >= 1073741824 then return string.format("%.2f GB", bytes / 1073741824)
-    elseif bytes >= 1048576 then return string.format("%.2f MB", bytes / 1048576)
-    elseif bytes >= 1024 then return string.format("%.2f KB", bytes / 1024)
-    else return bytes .. " Bytes" end
+    if bytes >= 1073741824 then
+        return string.format("%.2f GB", bytes / 1073741824)
+    elseif bytes >= 1048576 then
+        return string.format("%.2f MB", bytes / 1048576)
+    elseif bytes >= 1024 then
+        return string.format("%.2f KB", bytes / 1024)
+    else
+        return bytes .. " Bytes"
+    end
 end
 
 local function print_progress(current, total)
     local bar_len = 30
     local percent = total > 0 and (current / total) or 0
     if percent > 1 then percent = 1 end
-    
     local filled = math.floor(percent * bar_len)
     local bar = string.rep("=", filled) .. string.rep(" ", bar_len - filled)
-    
     local cur_str = format_bytes(current)
     local tot_str = format_bytes(total)
-    
-    io.write(string.format("\r[ai.Data] Downloading [%s] %d%% (%s / %s)", 
+    io.write(string.format("\r[ai.Data] Downloading [%s] %d%% (%s / %s)",
         bar, math.floor(percent * 100), cur_str, tot_str))
     io.flush()
 end
@@ -42,7 +44,6 @@ local function download_with_progress(url, local_file, max_bytes)
 
     while true do
         if max_bytes and current_bytes >= max_bytes then break end
-        
         local end_byte = current_bytes + chunk_size - 1
         if max_bytes and end_byte >= max_bytes then
             end_byte = max_bytes - 1
@@ -54,7 +55,6 @@ local function download_with_progress(url, local_file, max_bytes)
 
         local f_in = io.open(temp_file, "rb")
         if not f_in then break end
-        
         local data = f_in:read("*a")
         f_in:close()
         os.remove(temp_file)
@@ -73,7 +73,6 @@ local function download_with_progress(url, local_file, max_bytes)
 
         if #data < chunk_size then break end
     end
-    
     f_out:close()
     print(" ")
     return current_bytes > 0
@@ -85,11 +84,10 @@ local function get_hf_file_list(repo_id)
     if not handle then return {} end
     local response = handle:read("*a")
     handle:close()
-
     local files = {}
     for file_path in response:gmatch('"rfilename"%s*:%s*"([^"]+)"') do
-        if file_path:match("%.txt$") or file_path:match("%.csv$") or 
-           file_path:match("%.jsonl$") or file_path:match("%.parquet") then
+        if file_path:match("%.txt$") or file_path:match("%.csv$") or
+            file_path:match("%.jsonl$") or file_path:match("%.parquet") then
             table.insert(files, file_path)
         end
     end
@@ -138,16 +136,12 @@ local function pull_from_hf(repo_id, limit, filename)
         if not file_exists(local_file) then
             local url = string.format("https://huggingface.co/datasets/%s/resolve/main/%s", repo_id, hf_path)
             print("\n[ai.Data] File: " .. hf_path)
-            
             local remaining_bytes = max_bytes and (max_bytes - total_bytes_downloaded) or nil
-            
             local success = download_with_progress(url, local_file, remaining_bytes)
-            
             if success and file_exists(local_file) then
                 local f = io.open(local_file, "r")
                 local first_line = f:read("*l") or ""
                 f:close()
-                
                 if first_line:find("Entry not found") or first_line:find("<!DOCTYPE html>") then
                     print("[ai.Data] WARNING: Failed to download " .. hf_path .. " (404 Not Found)")
                     os.remove(local_file)
@@ -183,16 +177,15 @@ local function extract_text_from_binary(file)
 
     local lines = {}
     local current_word = {}
-    
-    -- Scan every single byte in the file
+
     for i = 1, #data do
         local byte = data:byte(i)
-        if (byte >= 32 and byte <= 126) or byte == 9 then -- 9 is tab
+        if (byte >= 32 and byte <= 126) or byte == 9 then
             table.insert(current_word, string.char(byte))
         else
             if #current_word > 0 then
                 local word = table.concat(current_word)
-                if #word > 2 and not word:match("^[\x00-\xff]+$") then 
+                if #word > 2 and not word:match("^[\x00-\xff]+$") then
                     if lines[#lines] then
                         lines[#lines] = lines[#lines] .. " " .. word
                     else
@@ -201,36 +194,34 @@ local function extract_text_from_binary(file)
                 end
                 current_word = {}
             end
-            
-            -- Newlines in binary often mean end of a row
+
             if byte == 10 or byte == 13 then -- \n or \r
                 if lines[#lines] and #lines[#lines] > 10 then
-                    table.insert(lines, "") -- Start a new line
+                    table.insert(lines, "")  -- Start a new line
                 end
             end
         end
     end
-    
-    -- Clean up empty lines
+
     local clean_lines = {}
     for _, l in ipairs(lines) do
         if l and #l > 0 then
             table.insert(clean_lines, l)
         end
     end
-    
+
     return clean_lines
 end
 
 function Data.new(...)
-    local args = {...}
+    local args = { ... }
     local self = setmetatable({}, Data)
 
     self.files = {}
     self.batch_size = 8
     self.shuffle = true
     self.stream = false
-    self.tokenizer = nil  
+    self.tokenizer = nil
 
     local sources = {}
     local limit = nil
@@ -257,7 +248,7 @@ function Data.new(...)
                     filename = src:sub(second_slash + 1)
                 end
             end
-            
+
             local downloaded_paths = pull_from_hf(repo_id, limit, filename)
             if downloaded_paths and type(downloaded_paths) == "table" then
                 for _, f in ipairs(downloaded_paths) do
@@ -275,11 +266,11 @@ function Data.new(...)
 end
 
 function Data:config(opts)
-    opts = opts or {}
+    opts            = opts or {}
     self.batch_size = opts.batch_size or self.batch_size
-    self.shuffle    = opts.shuffle    ~= nil and opts.shuffle or self.shuffle
-    self.stream     = opts.stream     ~= nil and opts.stream or self.stream
-    self.tokenizer  = opts.tokenizer  or self.tokenizer
+    self.shuffle    = opts.shuffle ~= nil and opts.shuffle or self.shuffle
+    self.stream     = opts.stream ~= nil and opts.stream or self.stream
+    self.tokenizer  = opts.tokenizer or self.tokenizer
     return self
 end
 
@@ -297,7 +288,6 @@ local function read_all_lines(files)
                 table.insert(lines, l)
             end
         else
-            -- Normal text file reading
             local f = io.open(file, "r")
             if f then
                 for line in f:lines() do

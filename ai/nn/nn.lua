@@ -70,7 +70,6 @@ end
 local MLP = {}
 MLP.__index = MLP
 
--- Last layer automatically set to linear (no ReLU) to avoid dying-ReLU on outputs
 function nn.MLP(sizes)
     local self = setmetatable({}, MLP)
     self.layers = {}
