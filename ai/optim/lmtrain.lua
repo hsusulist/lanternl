@@ -320,6 +320,13 @@ function LMTrain.new(config)
     end
 
     self.base_lr = self.lr
+    if config.preset == "auto" and self.data then
+        local n = #self.data
+        if type(self.data[1]) == "table" then n = #self.data[1] end
+        if n < 100 then self.dim, self.layers, self.heads, self.ffn = 32, 1, 4, 64
+        elseif n < 1000 then self.dim, self.layers, self.heads, self.ffn = 64, 2, 4, 128
+        else self.dim, self.layers, self.heads, self.ffn = 128, 4, 8, 256 end
+    end
     self:_build()
     return self
 end
@@ -432,6 +439,9 @@ function LMTrain:run()
     local stalled = 0
     self.stopped = nil
 
+    local total_correct = 0
+    local total_tokens = 0
+
     for epoch = 1, epochs do
         self.epoch = epoch
 
@@ -445,6 +455,9 @@ function LMTrain:run()
 
         sgd.zero_grad()
         local total_loss = 0
+
+        total_correct = 0
+        total_tokens = 0
 
         for i = 1, nseq do
             local pair = cache[i]
@@ -549,7 +562,8 @@ function LMTrain:run()
 end
 
 function LMTrain:generate(seed_tokens, n)
-    if type(seed_tokens) == "string" then
+    local was_string = type(seed_tokens) == "string"
+    if was_string then
         local t = {}
         for i = 1, #seed_tokens do t[i] = string.byte(seed_tokens, i) end
         seed_tokens = t
@@ -567,6 +581,15 @@ function LMTrain:generate(seed_tokens, n)
         end
         tokens[#tokens + 1] = best_id
     end
+    
+    if was_string then
+        local chars = {}
+        for i = 1, #tokens do
+            chars[i] = string.char(tokens[i])
+        end
+        return table.concat(chars)
+    end
+    
     return tokens
 end
 
