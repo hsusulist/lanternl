@@ -1,60 +1,89 @@
 local Data = {}
 Data.__index = Data
 
--- FIX 1: Check if file exists AND has data in it
 local function file_exists(path)
     local f = io.open(path, "r")
     if f ~= nil then 
-        local size = f:seek("end") -- Check size
+        local size = f:seek("end")
         io.close(f)
-        return size > 0 -- Only return true if it's not empty
+        return size > 0
     end
     return false
 end
 
 local function format_bytes(bytes)
-    if bytes >= 1073741824 then
-        return string.format("%.2f GB", bytes / 1073741824)
-    elseif bytes >= 1048576 then
-        return string.format("%.2f MB", bytes / 1048576)
-    elseif bytes >= 1024 then
-        return string.format("%.2f KB", bytes / 1024)
-    else
-        return bytes .. " Bytes"
-    end
+    if bytes >= 1073741824 then return string.format("%.2f GB", bytes / 1073741824)
+    elseif bytes >= 1048576 then return string.format("%.2f MB", bytes / 1048576)
+    elseif bytes >= 1024 then return string.format("%.2f KB", bytes / 1024)
+    else return bytes .. " Bytes" end
 end
 
-local function get_remote_info(url)
-    local handle = io.popen(string.format('curl -s -I -L "%s"', url))
-    if not handle then return 0, 0 end
-    local response = handle:read("*a")
-    handle:close()
+-- NEW: Beautiful real-time progress bar!
+local function print_progress(current, total)
+    local bar_len = 30
+    local percent = total > 0 and (current / total) or 0
+    if percent > 1 then percent = 1 end
+    
+    local filled = math.floor(percent * bar_len)
+    local bar = string.rep("=", filled) .. string.rep(" ", bar_len - filled)
+    
+    local cur_str = format_bytes(current)
+    local tot_str = format_bytes(total)
+    
+    io.write(string.format("\r[ai.Data] Downloading [%s] %d%% (%s / %s)", 
+        bar, math.floor(percent * 100), cur_str, tot_str))
+    io.flush()
+end
 
-    local bytes = 0
-    local cl = response:match("[Cc]ontent%-[Ll]ength:%s*(%d+)")
-    if cl then bytes = tonumber(cl) or 0 end
+-- NEW: Downloads in 1MB chunks so we can update the progress bar!
+local function download_with_progress(url, local_file, max_bytes)
+    local chunk_size = 1048576 -- 1 MB
+    local current_bytes = 0
+    local f_out = io.open(local_file, "wb")
+    if not f_out then return false end
 
-    local sample_handle = io.popen(string.format('curl -s -L -r 0-102400 "%s"', url))
-    local sample_pairs = 0
-    if sample_handle then
-        local sample_text = sample_handle:read("*a")
-        sample_handle:close()
-        for _ in sample_text:gmatch("\n") do
-            sample_pairs = sample_pairs + 1
+    while true do
+        if max_bytes and current_bytes >= max_bytes then break end
+        
+        local end_byte = current_bytes + chunk_size - 1
+        if max_bytes and end_byte >= max_bytes then
+            end_byte = max_bytes - 1
         end
-    end
 
-    local estimated_pairs = 0
-    if bytes > 0 and sample_pairs > 0 then
-        estimated_pairs = math.floor((bytes / 102400) * sample_pairs)
-    else
-        estimated_pairs = sample_pairs
-    end
+        local temp_file = "temp_chunk.bin"
+        -- curl -r 0-1048576 gets bytes 0 to 1MB
+        local cmd = string.format('curl -s -L -r %d-%d -o "%s" "%s"', current_bytes, end_byte, temp_file, url)
+        os.execute(cmd)
 
-    return bytes, estimated_pairs
+        local f_in = io.open(temp_file, "rb")
+        if not f_in then break end
+        
+        local data = f_in:read("*a")
+        f_in:close()
+        os.remove(temp_file)
+
+        if not data or #data == 0 then break end -- End of file
+
+        f_out:write(data)
+        current_bytes = current_bytes + #data
+
+        if max_bytes then
+            print_progress(current_bytes, max_bytes)
+        else
+            -- If no limit, just show how much we've downloaded
+            io.write("\r[ai.Data] Downloaded " .. format_bytes(current_bytes) .. "...")
+            io.flush()
+        end
+
+        -- If we got less data than we asked for, the file is finished
+        if #data < chunk_size then break end
+    end
+    
+    f_out:close()
+    print(" ") -- Print newline when done
+    return current_bytes > 0
 end
 
--- Helper to ask HuggingFace API for all files in a repo
 local function get_hf_file_list(repo_id)
     local url = string.format("https://huggingface.co/api/datasets/%s", repo_id)
     local handle = io.popen(string.format('curl -s -L "%s"', url))
@@ -62,10 +91,8 @@ local function get_hf_file_list(repo_id)
     local response = handle:read("*a")
     handle:close()
 
-    -- HuggingFace API returns JSON. We use a simple pattern to find all "rfilename": "..."
     local files = {}
     for file_path in response:gmatch('"rfilename"%s*:%s*"([^"]+)"') do
-        -- We only care about actual data files
         if file_path:match("%.txt$") or file_path:match("%.csv$") or 
            file_path:match("%.jsonl$") or file_path:match("%.parquet") then
             table.insert(files, file_path)
@@ -75,10 +102,8 @@ local function get_hf_file_list(repo_id)
 end
 
 local function pull_from_hf(repo_id, limit, filename)
-    -- 1. Figure out what files we need to download
     local files_to_download = {}
     if filename then
-        -- User specified an exact file
         files_to_download = { filename }
     else
         print("[ai.Data] Scanning HuggingFace repo '" .. repo_id .. "' for data files...")
@@ -89,7 +114,6 @@ local function pull_from_hf(repo_id, limit, filename)
         end
     end
 
-    -- 2. Parse the user's size limit (e.g., "500MB" -> 524288000 bytes)
     local max_bytes = nil
     if limit then
         local lim_str = tostring(limit):lower():gsub("%s+", "")
@@ -108,34 +132,23 @@ local function pull_from_hf(repo_id, limit, filename)
     local downloaded_files = {}
     local total_bytes_downloaded = 0
 
-    -- 3. Download files one by one
     for _, hf_path in ipairs(files_to_download) do
-        -- Stop if we hit the user's byte limit
         if max_bytes and total_bytes_downloaded >= max_bytes then
             print("[ai.Data] Reached size limit (" .. limit .. "). Stopping download.")
             break
         end
 
-        -- Create a safe local filename (replace slashes with underscores)
         local local_file = repo_id:gsub("/", "_") .. "_" .. hf_path:gsub("/", "_")
 
         if not file_exists(local_file) then
             local url = string.format("https://huggingface.co/datasets/%s/resolve/main/%s", repo_id, hf_path)
-            print("[ai.Data] Downloading: " .. hf_path)
-
-            local cmd
-            if max_bytes then
-                -- If there's a limit, only download the remaining bytes we are allowed
-                local remaining = max_bytes - total_bytes_downloaded
-                cmd = string.format('curl -L -s -r 0-%d -o "%s" "%s"', remaining - 1, local_file, url)
-            else
-                cmd = string.format('curl -L -s -o "%s" "%s"', local_file, url)
-            end
-
-            os.execute(cmd)
-
-            -- Verify it downloaded and isn't an HTML error page
-            if file_exists(local_file) then
+            print("\n[ai.Data] File: " .. hf_path)
+            
+            local remaining_bytes = max_bytes and (max_bytes - total_bytes_downloaded) or nil
+            
+            local success = download_with_progress(url, local_file, remaining_bytes)
+            
+            if success and file_exists(local_file) then
                 local f = io.open(local_file, "r")
                 local first_line = f:read("*l") or ""
                 f:close()
@@ -145,26 +158,80 @@ local function pull_from_hf(repo_id, limit, filename)
                     os.remove(local_file)
                 else
                     local size = io.open(local_file, "r"):seek("end")
-                    io.close(io.open(local_file, "r")) -- close it safely
+                    io.close(io.open(local_file, "r"))
                     total_bytes_downloaded = total_bytes_downloaded + size
                     table.insert(downloaded_files, local_file)
                 end
             end
         else
-            -- File already exists locally, skip downloading
             local size = io.open(local_file, "r"):seek("end")
             io.close(io.open(local_file, "r"))
             total_bytes_downloaded = total_bytes_downloaded + size
             table.insert(downloaded_files, local_file)
+            print("[ai.Data] Skipping " .. hf_path .. " (already downloaded)")
         end
     end
 
-    if #downloadloaded_files == 0 then
+    if #downloaded_files == 0 then
         print("[ai.Data] ERROR: Failed to download any files.")
         return nil
     end
 
-    return downloaded_files -- Returns a TABLE of file paths!
+    return downloaded_files
+end
+
+-- NEW: Pure Lua Parquet/Binary text extractor!
+-- Parquet is compressed binary, but the actual text strings are often stored as plain bytes inside.
+local function extract_text_from_binary(file)
+    local f = io.open(file, "rb")
+    if not f then return {} end
+    local data = f:read("*a")
+    f:close()
+
+    local lines = {}
+    local current_word = {}
+    
+    -- Scan every single byte in the file
+    for i = 1, #data do
+        local byte = data:byte(i)
+        
+        -- If it's a standard ASCII letter, number, or punctuation, keep it
+        if (byte >= 32 and byte <= 126) or byte == 9 then -- 9 is tab
+            table.insert(current_word, string.char(byte))
+        else
+            -- If we hit a binary byte (0x00, compression markers, etc), end the current word
+            if #current_word > 0 then
+                local word = table.concat(current_word)
+                -- Only save it if it looks like a real word (length > 2)
+                if #word > 2 and not word:match("^[\x00-\xff]+$") then 
+                    -- We join words with spaces so they form lines
+                    if lines[#lines] then
+                        lines[#lines] = lines[#lines] .. " " .. word
+                    else
+                        table.insert(lines, word)
+                    end
+                end
+                current_word = {}
+            end
+            
+            -- Newlines in binary often mean end of a row
+            if byte == 10 or byte == 13 then -- \n or \r
+                if lines[#lines] and #lines[#lines] > 10 then
+                    table.insert(lines, "") -- Start a new line
+                end
+            end
+        end
+    end
+    
+    -- Clean up empty lines
+    local clean_lines = {}
+    for _, l in ipairs(lines) do
+        if l and #l > 0 then
+            table.insert(clean_lines, l)
+        end
+    end
+    
+    return clean_lines
 end
 
 function Data.new(...)
@@ -193,7 +260,6 @@ function Data.new(...)
 
     for _, src in ipairs(sources) do
         if src:find("/") and not file_exists(src) then
-            -- Split repo ID and exact filename (if provided)
             local repo_id, filename = src, nil
             local first_slash = src:find("/")
             if first_slash then
@@ -206,7 +272,6 @@ function Data.new(...)
             
             local downloaded_paths = pull_from_hf(repo_id, limit, filename)
             if downloaded_paths and type(downloaded_paths) == "table" then
-                -- Merge the downloaded files into self.files
                 for _, f in ipairs(downloaded_paths) do
                     table.insert(self.files, f)
                 end
@@ -237,14 +302,24 @@ setmetatable(Data, {
 local function read_all_lines(files)
     local lines = {}
     for _, file in ipairs(files) do
-        local f = io.open(file, "r")
-        if f then
-            for line in f:lines() do
-                if line ~= "" then
-                    table.insert(lines, line)
-                end
+        -- Check if the file is a Parquet file
+        if file:match("%.parquet") then
+            print("[ai.Data] Parsing Parquet binary: " .. file .. " ...")
+            local extracted = extract_text_from_binary(file)
+            for _, l in ipairs(extracted) do
+                table.insert(lines, l)
             end
-            f:close()
+        else
+            -- Normal text file reading
+            local f = io.open(file, "r")
+            if f then
+                for line in f:lines() do
+                    if line ~= "" then
+                        table.insert(lines, line)
+                    end
+                end
+                f:close()
+            end
         end
     end
     return lines
