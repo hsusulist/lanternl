@@ -24,7 +24,7 @@ for i = 1, #BACKEND_NAMES do
     else
         entry.module = mod
         if mod.available ~= true then
-            entry.reason = "module reports available = " .. tostring(mod.available)
+            entry.reason = mod.reason or ("module reports available = " .. tostring(mod.available))
         elseif type(mod.matmul) ~= "function" then
             entry.reason = "module is available but exposes no matmul() function"
         else
@@ -105,11 +105,16 @@ function matrix.use(name)
     end
     for i = 1, #backends do
         if backends[i].name == name then
+            if not backends[i].available then
+                error(sformat("matrix.use: backend '%s' is not usable: %s",
+                    name, backends[i].reason), 2)
+            end
             matrix.accel.force = name
             matrix.accel.enabled = true
             return name
         end
     end
+
     error(sformat("matrix.use: unknown backend '%s' (expected 'auto', 'lua', %s)",
         tostring(name), concat(BACKEND_NAMES, ", ")), 2)
 end

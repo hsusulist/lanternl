@@ -1,12 +1,12 @@
 
 local ok_luatl, luaTL = pcall(require, "luaTL")
 if not ok_luatl then
-    return { available = false }
+    return { available = false, reason = "require('luaTL') failed: " .. tostring(luaTL) }
 end
 
 local ok_init, init_err = pcall(function() luaTL.init(0) end)
 if not ok_init then
-    return { available = false }
+    return { available = false, reason = "luaTL.init(0) failed: " .. tostring(init_err) }
 end
 
 local adapter = { available = true, device = luaTL.device }
