@@ -43,4 +43,34 @@ for upper_name, file_name in pairs(modules) do
     ai[file_name]  = lib
 end
 
+function ai.help()
+    print([=[
+=== lanternl quick guide ===
+
+TOKENIZER:
+local tok = ai.Tokenizer.new{ text = "hello world", vocab_size = 60 }
+tok:train()
+tok:encode("hello")
+
+TRAIN A LANGUAGE MODEL:
+local train = ai.LMTrain{ data = "hello world", e = 200 }
+train:run()
+train:generate("hel", 10)
+
+CONFIG (anytime after creation):
+train:config{ lr = 0.01, stop_loss = 0.01 }
+train:bar{ style = 2 }
+
+DATA (pull from Hugging Face):
+local data = ai.Data("wikitext/wikitext-2-v1", "500MB")
+data:config{ batch_size = 8, tokenizer = tok }
+data:batches()
+
+CHECK GPU/BACKEND STATUS:
+for _, b in ipairs(ai.Matrix.backends()) do print(b.name, b.available, b.reason) end
+]=])
+end
+
+ai.h = ai.help
+
 return ai
