@@ -6,7 +6,7 @@ Inspired by PyTorch's simplicity, but made simpler — designed for embedding AI
 
 ## Why?
 
-Most AI/ML tooling lives in Python. `lanternl` brings the same workflow — tokenizer, model, training loop — into Lua, so you can train and run small models anywhere Lua runs, without a Python runtime.
+Most AI/ML tooling lives in Python. `lanternl` brings the same workflow — tokenizer, model, training loop — into Lua, so you can train and run small models anywhere Lua runs, without a Python r[...]
 
 ## Features
 
@@ -47,6 +47,8 @@ train:generate("hel", 10)
 | GPU | Auto-detected and used if available, falls back to CPU silently |
 
 ## For advanced use
+
+Advanced: To train larger models and accelerate computation, pair Lanternl with luaTL (LuaJIT + CUDA) via the built-in `ai/core/luatl_adapter.lua`.
 
 Every default above is overridable:
 
