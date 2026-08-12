@@ -31,8 +31,10 @@ local modules = {
     Optim       = "optim",
     Optim2      = "optim2",
     Train       = "train",
+    LMTrain     = "lmtrain",
     GPU         = "gpu",
     BLAS        = "blas",
+    LuaTL       = "luatl_adapter",
 }
 
 for upper_name, file_name in pairs(modules) do

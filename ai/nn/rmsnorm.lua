@@ -1,5 +1,7 @@
 local Tensor = require("tensor2")
 local matrix = require("matrix")
+local ok_luatl, luatl_adapter = pcall(require, "luatl_adapter")
+if not ok_luatl then luatl_adapter = { available = false } end
 
 local RMSNorm = {}
 RMSNorm.__index = RMSNorm
@@ -16,6 +18,7 @@ function RMSNorm.new(config)
     self.dim = config.dim or DEFAULTS.dim
     self.eps = config.eps or DEFAULTS.eps
 
+    -- weight starts at all 1s (identity scaling at init)
     local w = matrix.new(1, self.dim)
     for j = 1, self.dim do
         w.data[j] = 1
@@ -25,6 +28,7 @@ function RMSNorm.new(config)
     return self
 end
 
+-- x: Tensor of shape (seq_len x dim)
 function RMSNorm:forward(x)
     local rows, cols = x.data.rows, x.data.cols
     local eps = self.eps
@@ -33,6 +37,8 @@ function RMSNorm:forward(x)
     local out_data = matrix.new(rows, cols)
     local r_values = {}
 
+    -- r_values (per-row rsqrt scale) always computed on CPU: cheap reduction,
+    -- needed for backward regardless of where the forward output is computed.
     for i = 1, rows do
         local base = (i - 1) * cols
         local sum_sq = 0
@@ -41,11 +47,18 @@ function RMSNorm:forward(x)
             sum_sq = sum_sq + v * v
         end
         local mean_sq = sum_sq / cols
-        local r = 1 / math.sqrt(mean_sq + eps)
-        r_values[i] = r
+        r_values[i] = 1 / math.sqrt(mean_sq + eps)
+    end
 
-        for j = 1, cols do
-            out_data.data[base + j] = x.data.data[base + j] * r * w[j]
+    if luatl_adapter.available then
+        out_data.data = luatl_adapter.rmsnorm(x.data.data, rows, cols, w, eps)
+    else
+        for i = 1, rows do
+            local base = (i - 1) * cols
+            local r = r_values[i]
+            for j = 1, cols do
+                out_data.data[base + j] = x.data.data[base + j] * r * w[j]
+            end
         end
     end
 
@@ -57,6 +70,7 @@ function RMSNorm:forward(x)
             local base = (i - 1) * cols
             local r = r_values[i]
 
+            -- S_i = sum_j( grad_out_ij * w_j * x_ij )
             local S = 0
             for j = 1, cols do
                 S = S + out.grad.data[base + j] * w[j] * x.data.data[base + j]
@@ -66,9 +80,11 @@ function RMSNorm:forward(x)
                 local g = out.grad.data[base + j]
                 local xij = x.data.data[base + j]
 
+                -- gradient wrt input x
                 local dx = r * w[j] * g - (r * r * r / cols) * xij * S
                 x.grad.data[base + j] = x.grad.data[base + j] + dx
 
+                -- gradient wrt weight (accumulated across rows)
                 weight_ref.grad.data[j] = weight_ref.grad.data[j] + g * xij * r
             end
         end

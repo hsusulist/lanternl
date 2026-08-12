@@ -1,5 +1,8 @@
 local matrix = {}
 
+local ok_luatl, luatl_adapter = pcall(require, "luatl_adapter")
+if not ok_luatl then luatl_adapter = { available = false } end
+
 local ok_gpu, gpu = pcall(require, "gpu")
 if not ok_gpu then gpu = { available = false } end
 
@@ -70,6 +73,11 @@ end
 
 function matrix.multiply(a, b)
     assert(a.cols == b.rows, "multiply: a.cols must equal b.rows")
+
+    if luatl_adapter.available then
+        local result_flat = luatl_adapter.matmul(a.data, a.rows, a.cols, b.data, b.cols)
+        return { rows = a.rows, cols = b.cols, data = result_flat }
+    end
 
     if gpu.available then
         local result_flat = gpu.matmul(a.data, a.rows, a.cols, b.data, b.cols)

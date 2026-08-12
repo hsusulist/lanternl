@@ -1,4 +1,6 @@
 local matrix = require("matrix")
+local ok_luatl, luatl_adapter = pcall(require, "luatl_adapter")
+if not ok_luatl then luatl_adapter = { available = false } end
 
 local Tensor = {}
 Tensor.__index = Tensor
@@ -89,7 +91,10 @@ function Tensor.softmax_rows(a)
     local rows, cols = a.data.rows, a.data.cols
     local out_data = matrix.new(rows, cols)
 
-    for i = 1, rows do
+    if luatl_adapter.available then
+        out_data.data = luatl_adapter.softmax(a.data.data, rows, cols)
+    else
+        for i = 1, rows do
         local base = (i - 1) * cols
         local max_val = -math.huge
         for j = 1, cols do
@@ -106,6 +111,7 @@ function Tensor.softmax_rows(a)
 
         for j = 1, cols do
             out_data.data[base + j] = out_data.data[base + j] / sum
+        end
         end
     end
 
