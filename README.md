@@ -1,4 +1,4 @@
-# 🏮 lanternl
+#  lanternl
 
 A deep learning library built from scratch in pure Lua — no Python, no external ML dependencies.
 
