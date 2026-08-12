@@ -6,7 +6,7 @@ Inspired by PyTorch's simplicity, but made simpler — designed for embedding AI
 
 ## Why?
 
-Most AI/ML tooling lives in Python. `lanternl` brings the same workflow — tokenizer, model, training loop — into Lua, so you can train and run small models anywhere Lua runs, without a Python r[...]
+Most AI/ML tooling lives in Python. `lanternl` brings the same workflow — tokenizer, model, training loop — into Lua, so you can train and run small models anywhere Lua runs, without a Python runtime.
 
 ## Features
 
@@ -48,7 +48,41 @@ train:generate("hel", 10)
 
 ## For advanced use
 
-Advanced: To train larger models and accelerate computation, pair Lanternl with luaTL (LuaJIT + CUDA) via the built-in `ai/core/luatl_adapter.lua`.
+Lanternl runs on pure Lua (CPU) out of the box, but you can train larger models and accelerate operations by pairing Lanternl with luaTL (LuaJIT + CUDA). luaTL is a small, dependency-free GPU math engine maintained at https://github.com/hsusulist/lua-TL and the repository includes a built-in adapter at `ai/core/luatl_adapter.lua`.
+
+Minimal steps to use luaTL with Lanternl:
+
+1. Build luaTL (requires NVIDIA CUDA Toolkit and LuaJIT):
+
+```bash
+# Linux / macOS
+nvcc -O3 -shared -Xcompiler -fPIC -o libluaTL.so luaTL_core.cu
+
+# Windows
+nvcc -O3 -shared -o luaTL.dll luaTL_core.cu
+```
+
+2. Put the compiled `libluaTL.so` (or `luaTL.dll`) where LuaJIT can find it (project dir or system library path). Also include `luaTL.lua` alongside it or on `package.path`.
+
+3. From your Lanternl project, ensure LuaJIT is used and require the adapter (Lanternl's `ai` automatically attempts to load `luatl_adapter`):
+
+```lua
+local ai = require("ai")
+-- optional: force the luatl adapter so Lanternl uses GPU ops when available
+ai.Matrix.use("luatl_adapter")
+
+-- check available backends
+for _, b in ipairs(ai.Matrix.backends()) do
+  print(string.format("Backend: %-15s | Available: %-5s | Reason: %s",
+        b.name, tostring(b.available), b.reason))
+end
+```
+
+Notes and tips:
+- luaTL requires LuaJIT (to use FFI) and a compatible CUDA driver/toolkit.
+- If luaTL isn't present or fails to load, Lanternl will fall back to the pure-Lua CPU implementation automatically.
+- For reproducible GPU usage call `ai.Matrix.use("luatl_adapter")` early in your script to force the backend.
+- See https://github.com/hsusulist/lua-TL for full build instructions and examples.
 
 Every default above is overridable:
 
