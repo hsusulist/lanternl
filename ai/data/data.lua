@@ -18,7 +18,6 @@ local function format_bytes(bytes)
     else return bytes .. " Bytes" end
 end
 
--- NEW: Beautiful real-time progress bar!
 local function print_progress(current, total)
     local bar_len = 30
     local percent = total > 0 and (current / total) or 0
@@ -35,7 +34,6 @@ local function print_progress(current, total)
     io.flush()
 end
 
--- NEW: Downloads in 1MB chunks so we can update the progress bar!
 local function download_with_progress(url, local_file, max_bytes)
     local chunk_size = 1048576 -- 1 MB
     local current_bytes = 0
@@ -51,7 +49,6 @@ local function download_with_progress(url, local_file, max_bytes)
         end
 
         local temp_file = "temp_chunk.bin"
-        -- curl -r 0-1048576 gets bytes 0 to 1MB
         local cmd = string.format('curl -s -L -r %d-%d -o "%s" "%s"', current_bytes, end_byte, temp_file, url)
         os.execute(cmd)
 
@@ -62,7 +59,7 @@ local function download_with_progress(url, local_file, max_bytes)
         f_in:close()
         os.remove(temp_file)
 
-        if not data or #data == 0 then break end -- End of file
+        if not data or #data == 0 then break end
 
         f_out:write(data)
         current_bytes = current_bytes + #data
@@ -70,17 +67,15 @@ local function download_with_progress(url, local_file, max_bytes)
         if max_bytes then
             print_progress(current_bytes, max_bytes)
         else
-            -- If no limit, just show how much we've downloaded
             io.write("\r[ai.Data] Downloaded " .. format_bytes(current_bytes) .. "...")
             io.flush()
         end
 
-        -- If we got less data than we asked for, the file is finished
         if #data < chunk_size then break end
     end
     
     f_out:close()
-    print(" ") -- Print newline when done
+    print(" ")
     return current_bytes > 0
 end
 
@@ -180,8 +175,6 @@ local function pull_from_hf(repo_id, limit, filename)
     return downloaded_files
 end
 
--- NEW: Pure Lua Parquet/Binary text extractor!
--- Parquet is compressed binary, but the actual text strings are often stored as plain bytes inside.
 local function extract_text_from_binary(file)
     local f = io.open(file, "rb")
     if not f then return {} end
@@ -194,17 +187,12 @@ local function extract_text_from_binary(file)
     -- Scan every single byte in the file
     for i = 1, #data do
         local byte = data:byte(i)
-        
-        -- If it's a standard ASCII letter, number, or punctuation, keep it
         if (byte >= 32 and byte <= 126) or byte == 9 then -- 9 is tab
             table.insert(current_word, string.char(byte))
         else
-            -- If we hit a binary byte (0x00, compression markers, etc), end the current word
             if #current_word > 0 then
                 local word = table.concat(current_word)
-                -- Only save it if it looks like a real word (length > 2)
                 if #word > 2 and not word:match("^[\x00-\xff]+$") then 
-                    -- We join words with spaces so they form lines
                     if lines[#lines] then
                         lines[#lines] = lines[#lines] .. " " .. word
                     else
@@ -302,7 +290,6 @@ setmetatable(Data, {
 local function read_all_lines(files)
     local lines = {}
     for _, file in ipairs(files) do
-        -- Check if the file is a Parquet file
         if file:match("%.parquet") then
             print("[ai.Data] Parsing Parquet binary: " .. file .. " ...")
             local extracted = extract_text_from_binary(file)

@@ -593,6 +593,56 @@ function LMTrain:generate(seed_tokens, n)
     return tokens
 end
 
+function LMTrain:save(path)
+    local f = io.open(path, "w")
+    f:write(string.format("vocab=%d dim=%d layers=%d heads=%d ffn=%d\n",
+        self.vocab, self.dim, self.layers, self.heads, self.ffn))
+    for i = 1, #self.params do
+        local d = self.params[i].data.data
+        local total = self.params[i].data.rows * self.params[i].data.cols
+        local parts = {}
+        for k = 1, total do parts[k] = tostring(d[k]) end
+        f:write(table.concat(parts, ",") .. "\n")
+    end
+    f:close()
+    print("Saved to " .. path)
+    return self
+end
+
+function LMTrain:load(path)
+    local f = io.open(path, "r")
+    if not f then error("LMTrain:load: cannot open " .. path, 2) end
+    local header = f:read("*l")
+    local vocab, dim, layers, heads, ffn =
+        header:match("vocab=(%d+) dim=(%d+) layers=(%d+) heads=(%d+) ffn=(%d+)")
+    self.vocab, self.dim, self.layers, self.heads, self.ffn =
+        tonumber(vocab), tonumber(dim), tonumber(layers), tonumber(heads), tonumber(ffn)
+    self:_build()
+    for i = 1, #self.params do
+        local line = f:read("*l")
+        local d, j = self.params[i].data.data, 0
+        for num_str in line:gmatch("[^,]+") do
+            j = j + 1
+            d[j] = tonumber(num_str)
+        end
+    end
+    f:close()
+    print("Loaded from " .. path)
+    return self
+end
+
+function LMTrain:push(repo_id, token)
+    self:save("lanternl_model.txt")
+    local cmd = token
+        and string.format('huggingface-cli upload %s lanternl_model.txt lanternl_model.txt --token %s', repo_id, token)
+        or string.format('huggingface-cli upload %s lanternl_model.txt lanternl_model.txt', repo_id)
+    local ok = os.execute(cmd)
+    if not ok then
+        print("LMTrain:push: upload failed — check huggingface-cli is installed and you're logged in")
+    end
+    return ok
+end
+
 function LMTrain:parameters()
     if self._dirty or self.model == nil then self:_build() end
     return self.params
