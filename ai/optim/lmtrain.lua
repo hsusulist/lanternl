@@ -241,7 +241,7 @@ local function default_log(t)
     if filled > bar_len then filled = bar_len end
     local bar_str = srep(style.fill, filled) .. srep(style.empty, bar_len - filled)
     local marker = t.is_best and " (best)" or ""
-    print(sformat("[%s] Epoch %d/%d | Loss: %.5f%s", bar_str, t.epoch, total, t.loss, marker))
+    print(sformat("[%s] Epoch %d/%d | Loss: %.5f | Acc: %.1f%%%s", bar_str, t.epoch, total, t.loss, t.accuracy or 0, marker))
 end
 
 function LMTrain:_build()
@@ -287,6 +287,12 @@ end
 
 function LMTrain.new(config)
     config = resolve_aliases(config or {}, "LMTrain")
+    if type(config.data) == "string" then
+        local t = {}
+        for i = 1, #config.data do t[i] = string.byte(config.data, i) end
+        config.data = t
+        if config.vocab == nil then config.vocab = 256 end
+    end
     local self = setmetatable({}, LMTrain)
 
     self.history = {}
@@ -445,6 +451,18 @@ function LMTrain:run()
             local logits = model:forward(pair[1])
             local loss = Tensor.cross_entropy(logits, pair[2])
             loss:backward()
+            local correct = 0
+            for r = 1, logits.data.rows do
+                local base = (r - 1) * logits.data.cols
+                local best_id, best_val = 1, -math.huge
+                for c = 1, logits.data.cols do
+                    local v = logits.data.data[base + c]
+                    if v > best_val then best_val, best_id = v, c end
+                end
+                if best_id == pair[2][r] then correct = correct + 1 end
+            end
+            total_correct = total_correct + correct
+            total_tokens = total_tokens + logits.data.rows
             total_loss = total_loss + loss_value(loss, epoch)
         end
 
@@ -452,6 +470,7 @@ function LMTrain:run()
 
         local avg_loss = total_loss / nseq
         self.loss = avg_loss
+        self.accuracy = 100 * total_correct / total_tokens
         self.history[#self.history + 1] = avg_loss
         self.elapsed = os.clock() - started
 
@@ -527,6 +546,28 @@ function LMTrain:run()
     end
 
     return self.model
+end
+
+function LMTrain:generate(seed_tokens, n)
+    if type(seed_tokens) == "string" then
+        local t = {}
+        for i = 1, #seed_tokens do t[i] = string.byte(seed_tokens, i) end
+        seed_tokens = t
+    end
+    local tokens = {}
+    for i = 1, #seed_tokens do tokens[i] = seed_tokens[i] end
+
+    for _ = 1, n do
+        local logits = self.model:forward(tokens)
+        local last_row = (logits.data.rows - 1) * logits.data.cols
+        local best_id, best_val = 1, -math.huge
+        for j = 1, logits.data.cols do
+            local v = logits.data.data[last_row + j]
+            if v > best_val then best_val, best_id = v, j end
+        end
+        tokens[#tokens + 1] = best_id
+    end
+    return tokens
 end
 
 function LMTrain:parameters()
