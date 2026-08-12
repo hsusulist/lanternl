@@ -57,9 +57,6 @@ train:config{ log = function(t) print(t.epoch, t.loss) end }
 
 Run `ai.help()` anytime for the current full reference.
 
-## Status
-
-🚧 Work in progress — currently testing and upgrading.
 
 ## Author
 
