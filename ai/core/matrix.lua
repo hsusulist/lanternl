@@ -2,23 +2,35 @@ local matrix = {}
 
 local floor = math.floor
 local huge = math.huge
+local sqrt = math.sqrt
 local sformat = string.format
 local concat = table.concat
+local type = type
+local setmetatable = setmetatable
 
+local ok_tnew, tnew = pcall(require, "table.new")
+if not ok_tnew or type(tnew) ~= "function" then
+    tnew = function() return {} end
+end
+local ok_tclear, tclear = pcall(require, "table.clear")
+if not ok_tclear or type(tclear) ~= "function" then tclear = nil end
+
+matrix.strict = false
 matrix.accel = { enabled = true, threshold = 4096, max_errors = 3, force = nil }
 matrix.last_backend = "lua"
+
+local mt = { __index = matrix }
+matrix.mt = mt
 
 local BACKEND_NAMES = { "luatl_adapter", "gpu", "blas" }
 local backends = {}
 
-for i = 1, #BACKEND_NAMES do
-    local name = BACKEND_NAMES[i]
+local function probe(name)
     local entry = { name = name, available = false, errors = 0, reason = "not loaded" }
     local ok, mod = pcall(require, name)
     if not ok then
         local msg = tostring(mod)
-        msg = msg:match("^[^\n]*") or msg
-        entry.reason = "not installed (" .. msg .. ")"
+        entry.reason = "not installed (" .. (msg:match("^[^\n]*") or msg) .. ")"
     elseif type(mod) ~= "table" then
         entry.reason = "module did not return a table (got " .. type(mod) .. ")"
     else
@@ -32,11 +44,27 @@ for i = 1, #BACKEND_NAMES do
             entry.reason = "ready"
         end
     end
-    backends[i] = entry
+    return entry
+end
+
+for i = 1, #BACKEND_NAMES do
+    backends[i] = probe(BACKEND_NAMES[i])
+end
+
+function matrix.adapter()
+    for i = 1, #backends do
+        if backends[i].name == "luatl_adapter" then return backends[i].module end
+    end
+    return nil
 end
 
 local function is_int(x)
     return type(x) == "number" and x == floor(x) and x == x and x ~= huge and x ~= -huge
+end
+matrix.is_int = is_int
+
+function matrix.is(m)
+    return type(m) == "table" and getmetatable(m) == mt
 end
 
 local function check_matrix(m, who, argname)
@@ -52,12 +80,24 @@ local function check_matrix(m, who, argname)
     end
     return m
 end
+matrix.check = check_matrix
 
 local function ensure_len(m, who, argname)
     local total = m.rows * m.cols
-    if total > 0 and m.data[total] == nil then
-        error(sformat("matrix.%s: %s is declared %dx%d (%d elements) but data[%d] is nil",
-            who, argname, m.rows, m.cols, total, total), 3)
+    if total == 0 then return 0 end
+    local d = m.data
+    if matrix.strict then
+        for i = 1, total do
+            if type(d[i]) ~= "number" then
+                error(sformat("matrix.%s: %s is malformed (missing or non-numeric value at index %d)",
+                    who, argname, i), 3)
+            end
+        end
+    else
+        if type(d[1]) ~= "number" or type(d[total]) ~= "number" then
+            error(sformat("matrix.%s: %s is malformed (expected %d numbers, first/last check failed)",
+                who, argname, total), 3)
+        end
     end
     return total
 end
@@ -70,8 +110,9 @@ local function check_same_shape(a, b, who)
 end
 
 local function alloc(rows, cols)
-    return { rows = rows, cols = cols, data = {} }
+    return setmetatable({ rows = rows, cols = cols, data = tnew(rows * cols, 0) }, mt)
 end
+matrix.alloc = alloc
 
 local function target(out, rows, cols, who)
     if out == nil then return alloc(rows, cols) end
@@ -91,6 +132,13 @@ function matrix.backends()
                     errors = e.errors, last_error = e.last_error }
     end
     return list
+end
+
+function matrix.reset_backends()
+    for i = 1, #backends do
+        backends[i] = probe(BACKEND_NAMES[i])
+    end
+    return matrix.backends()
 end
 
 function matrix.use(name)
@@ -114,7 +162,6 @@ function matrix.use(name)
             return name
         end
     end
-
     error(sformat("matrix.use: unknown backend '%s' (expected 'auto', 'lua', %s)",
         tostring(name), concat(BACKEND_NAMES, ", ")), 2)
 end
@@ -140,7 +187,14 @@ local function try_backend(entry, ad, m, k, bd, n)
         return nil
     end
     local last = m * n
-    if res[last] == nil or type(res[1]) ~= "number" then
+    if matrix.strict then
+        for i = 1, last do
+            if type(res[i]) ~= "number" then
+                backend_failed(entry, sformat("matmul result index %d is %s", i, type(res[i])))
+                return nil
+            end
+        end
+    elseif type(res[1]) ~= "number" or type(res[last]) ~= "number" then
         backend_failed(entry, sformat("matmul returned a malformed result (expected %d numbers)", last))
         return nil
     end
@@ -152,16 +206,20 @@ function matrix.new(rows, cols)
         error(sformat("matrix.new: rows and cols must be non-negative integers (got %s, %s)",
             tostring(rows), tostring(cols)), 2)
     end
-    local m = { rows = rows, cols = cols, data = {} }
+    local m = alloc(rows, cols)
     local d = m.data
-    for i = 1, rows * cols do
-        d[i] = 0
-    end
+    for i = 1, rows * cols do d[i] = 0 end
     return m
 end
 
-function matrix.zeros(rows, cols)
-    return matrix.new(rows, cols)
+matrix.zeros = matrix.new
+
+function matrix.zero(m)
+    check_matrix(m, "zero", "m")
+    local total = m.rows * m.cols
+    local d = m.data
+    for i = 1, total do d[i] = 0 end
+    return m
 end
 
 function matrix.fill(rows, cols, value)
@@ -170,17 +228,13 @@ function matrix.fill(rows, cols, value)
     end
     local m = matrix.new(rows, cols)
     local d = m.data
-    for i = 1, rows * cols do
-        d[i] = value
-    end
+    for i = 1, rows * cols do d[i] = value end
     return m
 end
 
 function matrix.identity(n)
     local m = matrix.new(n, n)
-    for i = 1, n do
-        m.data[(i - 1) * n + i] = 1
-    end
+    for i = 1, n do m.data[(i - 1) * n + i] = 1 end
     return m
 end
 
@@ -257,36 +311,88 @@ function matrix.reshape(a, rows, cols)
     end
     local m = alloc(rows, cols)
     local ad, md = a.data, m.data
-    for i = 1, total do
-        md[i] = ad[i]
-    end
+    for i = 1, total do md[i] = ad[i] end
     return m
 end
 
 function matrix.get(m, i, j)
-    if type(m) ~= "table" or type(m.data) ~= "table" then
-        error("matrix.get: first argument is not a matrix", 2)
+    check_matrix(m, "get", "m")
+    if not is_int(i) or not is_int(j) then
+        error(sformat("matrix.get: indices must be integers, got (%s, %s)",
+            tostring(i), tostring(j)), 2)
     end
     if i < 1 or i > m.rows or j < 1 or j > m.cols then
-        error(sformat("matrix.get: index (%s,%s) out of bounds for %dx%d matrix",
-            tostring(i), tostring(j), m.rows, m.cols), 2)
+        error(sformat("matrix.get: index (%d,%d) out of bounds for %dx%d matrix",
+            i, j, m.rows, m.cols), 2)
     end
     return m.data[(i - 1) * m.cols + j]
 end
 
 function matrix.set(m, i, j, val)
-    if type(m) ~= "table" or type(m.data) ~= "table" then
-        error("matrix.set: first argument is not a matrix", 2)
+    check_matrix(m, "set", "m")
+    if not is_int(i) or not is_int(j) then
+        error(sformat("matrix.set: indices must be integers, got (%s, %s)",
+            tostring(i), tostring(j)), 2)
     end
     if i < 1 or i > m.rows or j < 1 or j > m.cols then
-        error(sformat("matrix.set: index (%s,%s) out of bounds for %dx%d matrix",
-            tostring(i), tostring(j), m.rows, m.cols), 2)
+        error(sformat("matrix.set: index (%d,%d) out of bounds for %dx%d matrix",
+            i, j, m.rows, m.cols), 2)
     end
     if type(val) ~= "number" then
         error("matrix.set: value must be a number, got " .. type(val), 2)
     end
     m.data[(i - 1) * m.cols + j] = val
     return m
+end
+
+function matrix.row_base(m, i)
+    return (i - 1) * m.cols
+end
+
+function matrix.get_row(m, i, out)
+    check_matrix(m, "get_row", "m")
+    if not is_int(i) or i < 1 or i > m.rows then
+        error("matrix.get_row: row index out of range: " .. tostring(i), 2)
+    end
+    local cols = m.cols
+    local base = (i - 1) * cols
+    local d = m.data
+    out = out or tnew(cols, 0)
+    for j = 1, cols do out[j] = d[base + j] end
+    return out
+end
+
+function matrix.set_row(m, i, values)
+    check_matrix(m, "set_row", "m")
+    if not is_int(i) or i < 1 or i > m.rows then
+        error("matrix.set_row: row index out of range: " .. tostring(i), 2)
+    end
+    local cols = m.cols
+    local base = (i - 1) * cols
+    local d = m.data
+    for j = 1, cols do
+        local v = values[j]
+        if type(v) ~= "number" then
+            error(sformat("matrix.set_row: value %d is %s, expected number", j, type(v)), 2)
+        end
+        d[base + j] = v
+    end
+    return m
+end
+
+function matrix.get_col(m, j, out)
+    check_matrix(m, "get_col", "m")
+    if not is_int(j) or j < 1 or j > m.cols then
+        error("matrix.get_col: column index out of range: " .. tostring(j), 2)
+    end
+    local rows, cols, d = m.rows, m.cols, m.data
+    out = out or tnew(rows, 0)
+    local idx = j
+    for i = 1, rows do
+        out[i] = d[idx]
+        idx = idx + cols
+    end
+    return out
 end
 
 function matrix.tostring(m, fmt)
@@ -304,9 +410,7 @@ function matrix.tostring(m, fmt)
                 cells[j] = sformat("%8s", tostring(v))
             end
         end
-        for j = cols + 1, #cells do
-            cells[j] = nil
-        end
+        for j = cols + 1, #cells do cells[j] = nil end
         lines[i] = concat(cells)
     end
     return concat(lines, "\n")
@@ -330,9 +434,7 @@ function matrix.add(a, b, out)
     ensure_len(b, "add", "b")
     local result = target(out, a.rows, a.cols, "add")
     local ad, bd, rd = a.data, b.data, result.data
-    for k = 1, total do
-        rd[k] = ad[k] + bd[k]
-    end
+    for k = 1, total do rd[k] = ad[k] + bd[k] end
     return result
 end
 
@@ -344,9 +446,7 @@ function matrix.sub(a, b, out)
     ensure_len(b, "sub", "b")
     local result = target(out, a.rows, a.cols, "sub")
     local ad, bd, rd = a.data, b.data, result.data
-    for k = 1, total do
-        rd[k] = ad[k] - bd[k]
-    end
+    for k = 1, total do rd[k] = ad[k] - bd[k] end
     return result
 end
 
@@ -358,24 +458,109 @@ function matrix.hadamard(a, b, out)
     ensure_len(b, "hadamard", "b")
     local result = target(out, a.rows, a.cols, "hadamard")
     local ad, bd, rd = a.data, b.data, result.data
-    for k = 1, total do
-        rd[k] = ad[k] * bd[k]
-    end
+    for k = 1, total do rd[k] = ad[k] * bd[k] end
     return result
 end
 
-function matrix.multiply(a, b)
+function matrix.axpy(y, alpha, x)
+    check_matrix(y, "axpy", "y")
+    check_matrix(x, "axpy", "x")
+    check_same_shape(y, x, "axpy")
+    local total = y.rows * y.cols
+    local yd, xd = y.data, x.data
+    if alpha == 1 then
+        for k = 1, total do yd[k] = yd[k] + xd[k] end
+    elseif alpha == -1 then
+        for k = 1, total do yd[k] = yd[k] - xd[k] end
+    else
+        for k = 1, total do yd[k] = yd[k] + alpha * xd[k] end
+    end
+    return y
+end
+
+function matrix.scale_add(out, a, alpha, b, beta)
+    check_matrix(a, "scale_add", "a")
+    check_matrix(b, "scale_add", "b")
+    check_same_shape(a, b, "scale_add")
+    local result = target(out, a.rows, a.cols, "scale_add")
+    local total = a.rows * a.cols
+    local ad, bd, rd = a.data, b.data, result.data
+    for k = 1, total do rd[k] = alpha * ad[k] + beta * bd[k] end
+    return result
+end
+
+function matrix.sumsq(m)
+    check_matrix(m, "sumsq", "m")
+    local total = m.rows * m.cols
+    local d = m.data
+    local s = 0
+    for k = 1, total do
+        local v = d[k]
+        s = s + v * v
+    end
+    return s
+end
+
+function matrix.is_finite_all(m)
+    local total = m.rows * m.cols
+    local d = m.data
+    for k = 1, total do
+        local v = d[k]
+        if type(v) ~= "number" or v ~= v or v == huge or v == -huge then return false end
+    end
+    return true
+end
+
+local function mm(ad, bd, rd, m, k, n, acc)
+    for i = 1, m do
+        local a_base = (i - 1) * k
+        local r_base = (i - 1) * n
+        local p0 = 1
+        if not acc then
+            local av = ad[a_base + 1]
+            if av ~= 0 then
+                for j = 1, n do rd[r_base + j] = av * bd[j] end
+            else
+                for j = 1, n do rd[r_base + j] = 0 end
+            end
+            p0 = 2
+        end
+        for p = p0, k do
+            local av = ad[a_base + p]
+            if av ~= 0 then
+                local b_base = (p - 1) * n
+                for j = 1, n do
+                    local idx = r_base + j
+                    rd[idx] = rd[idx] + av * bd[b_base + j]
+                end
+            end
+        end
+    end
+end
+
+function matrix.multiply(a, b, out, acc)
     check_matrix(a, "multiply", "a")
     check_matrix(b, "multiply", "b")
     if a.cols ~= b.rows then
         error(sformat("matrix.multiply: inner dimension mismatch, a is %dx%d and b is %dx%d (a.cols %d must equal b.rows %d)",
             a.rows, a.cols, b.rows, b.cols, a.cols, b.rows), 2)
     end
-
     local m, k, n = a.rows, a.cols, b.cols
-    if m == 0 or n == 0 or k == 0 then
+    local result = target(out, m, n, "multiply")
+    if result == a or result == b then
+        error("matrix.multiply: out must not alias a or b", 2)
+    end
+    if m == 0 or n == 0 then
         matrix.last_backend = "lua"
-        return matrix.new(m, n)
+        return result
+    end
+    if k == 0 then
+        matrix.last_backend = "lua"
+        if not acc then
+            local rd = result.data
+            for i = 1, m * n do rd[i] = 0 end
+        end
+        return result
     end
     ensure_len(a, "multiply", "a")
     ensure_len(b, "multiply", "b")
@@ -383,7 +568,7 @@ function matrix.multiply(a, b)
     local ad, bd = a.data, b.data
     local force = matrix.accel.force
 
-    if matrix.accel.enabled and force ~= "lua" then
+    if out == nil and not acc and matrix.accel.enabled and force ~= "lua" then
         local work = m * k * n
         local threshold = matrix.accel.threshold or 0
         if force ~= nil or work >= threshold then
@@ -393,7 +578,8 @@ function matrix.multiply(a, b)
                     local res = try_backend(entry, ad, m, k, bd, n)
                     if res ~= nil then
                         matrix.last_backend = entry.name
-                        return { rows = m, cols = n, data = res }
+                        result.data = res
+                        return result
                     end
                 end
             end
@@ -404,27 +590,65 @@ function matrix.multiply(a, b)
     end
 
     matrix.last_backend = "lua"
-    local result = alloc(m, n)
-    local rd = result.data
+    mm(ad, bd, result.data, m, k, n, acc)
+    return result
+end
 
+function matrix.matmul_nt(a, b, out, acc)
+    check_matrix(a, "matmul_nt", "a")
+    check_matrix(b, "matmul_nt", "b")
+    if a.cols ~= b.cols then
+        error(sformat("matrix.matmul_nt: inner dimension mismatch, a is %dx%d and b is %dx%d",
+            a.rows, a.cols, b.rows, b.cols), 2)
+    end
+    local m, k, n = a.rows, a.cols, b.rows
+    local result = target(out, m, n, "matmul_nt")
+    if result == a or result == b then
+        error("matrix.matmul_nt: out must not alias a or b", 2)
+    end
+    if m == 0 or n == 0 then return result end
+    local ad, bd, rd = a.data, b.data, result.data
     for i = 1, m do
         local a_base = (i - 1) * k
         local r_base = (i - 1) * n
-        local av = ad[a_base + 1]
-        local b_base = 0
-        if av ~= 0 then
-            for j = 1, n do
-                rd[r_base + j] = av * bd[j]
+        for j = 1, n do
+            local b_base = (j - 1) * k
+            local s = 0
+            for p = 1, k do
+                s = s + ad[a_base + p] * bd[b_base + p]
             end
-        else
-            for j = 1, n do
-                rd[r_base + j] = 0
-            end
+            local idx = r_base + j
+            if acc then rd[idx] = rd[idx] + s else rd[idx] = s end
         end
-        for p = 2, k do
-            av = ad[a_base + p]
+    end
+    return result
+end
+
+function matrix.matmul_tn(a, b, out, acc)
+    check_matrix(a, "matmul_tn", "a")
+    check_matrix(b, "matmul_tn", "b")
+    if a.rows ~= b.rows then
+        error(sformat("matrix.matmul_tn: outer dimension mismatch, a is %dx%d and b is %dx%d",
+            a.rows, a.cols, b.rows, b.cols), 2)
+    end
+    local m, k, n = a.rows, a.cols, b.cols
+    local result = target(out, k, n, "matmul_tn")
+    if result == a or result == b then
+        error("matrix.matmul_tn: out must not alias a or b", 2)
+    end
+    local rd = result.data
+    if not acc then
+        for i = 1, k * n do rd[i] = 0 end
+    end
+    if m == 0 or k == 0 or n == 0 then return result end
+    local ad, bd = a.data, b.data
+    for i = 1, m do
+        local a_base = (i - 1) * k
+        local b_base = (i - 1) * n
+        for p = 1, k do
+            local av = ad[a_base + p]
             if av ~= 0 then
-                b_base = (p - 1) * n
+                local r_base = (p - 1) * n
                 for j = 1, n do
                     local idx = r_base + j
                     rd[idx] = rd[idx] + av * bd[b_base + j]
@@ -443,9 +667,7 @@ function matrix.scale(a, n, out)
     local total = ensure_len(a, "scale", "a")
     local result = target(out, a.rows, a.cols, "scale")
     local ad, rd = a.data, result.data
-    for k = 1, total do
-        rd[k] = ad[k] * n
-    end
+    for k = 1, total do rd[k] = ad[k] * n end
     return result
 end
 
@@ -458,7 +680,11 @@ function matrix.map(a, fn, out)
     local result = target(out, a.rows, a.cols, "map")
     local ad, rd = a.data, result.data
     for k = 1, total do
-        rd[k] = fn(ad[k])
+        local v = fn(ad[k])
+        if type(v) ~= "number" then
+            error(sformat("matrix.map: fn returned %s at index %d, expected a number", type(v), k), 2)
+        end
+        rd[k] = v
     end
     return result
 end
@@ -467,6 +693,20 @@ function matrix.transpose(a, out)
     check_matrix(a, "transpose", "a")
     ensure_len(a, "transpose", "a")
     local rows, cols = a.rows, a.cols
+    if out == a then
+        if rows ~= cols then
+            error(sformat("matrix.transpose: cannot transpose a %dx%d matrix in place, pass a distinct out",
+                rows, cols), 2)
+        end
+        local d = a.data
+        for i = 1, rows - 1 do
+            for j = i + 1, cols do
+                local p, q = (i - 1) * cols + j, (j - 1) * cols + i
+                d[p], d[q] = d[q], d[p]
+            end
+        end
+        return a
+    end
     local result = target(out, cols, rows, "transpose")
     local ad, rd = a.data, result.data
     for i = 1, rows do
@@ -484,10 +724,9 @@ function matrix.copy(a, out)
     check_matrix(a, "copy", "a")
     local total = ensure_len(a, "copy", "a")
     local result = target(out, a.rows, a.cols, "copy")
+    if result == a then return result end
     local ad, rd = a.data, result.data
-    for k = 1, total do
-        rd[k] = ad[k]
-    end
+    for k = 1, total do rd[k] = ad[k] end
     return result
 end
 
@@ -495,17 +734,31 @@ function matrix.equals(a, b, tol)
     check_matrix(a, "equals", "a")
     check_matrix(b, "equals", "b")
     if a.rows ~= b.rows or a.cols ~= b.cols then return false end
+    ensure_len(a, "equals", "a")
+    ensure_len(b, "equals", "b")
     tol = tol or 0
     local total = a.rows * a.cols
     local ad, bd = a.data, b.data
     for k = 1, total do
         local x, y = ad[k], bd[k]
         if type(x) ~= "number" or type(y) ~= "number" then return false end
+        if x ~= x or y ~= y then return false end
         local diff = x - y
         if diff < 0 then diff = -diff end
         if diff > tol then return false end
     end
     return true
+end
+
+mt.__add = function(a, b) return matrix.add(a, b) end
+mt.__sub = function(a, b) return matrix.sub(a, b) end
+mt.__unm = function(a) return matrix.scale(a, -1) end
+mt.__eq = function(a, b) return matrix.equals(a, b) end
+mt.__tostring = function(a) return matrix.tostring(a) end
+mt.__mul = function(a, b)
+    if type(a) == "number" then return matrix.scale(b, a) end
+    if type(b) == "number" then return matrix.scale(a, b) end
+    return matrix.multiply(a, b)
 end
 
 return matrix

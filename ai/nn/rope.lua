@@ -1,11 +1,3 @@
--- rope.lua -- rotary position embeddings (RoPE)
--- Pure Lua 5.1 / LuaJIT. No autograd here: this module only owns the
--- cos/sin cache. The differentiable op lives in tensor2.lua (Tensor.rope).
---
--- Convention: INTERLEAVED pairs, i.e. (x1,x2), (x3,x4), ...
--- (the original RoPE paper's layout, not the GPT-NeoX split-half layout).
--- Either is fine for a from-scratch model as long as it is consistent,
--- but it matters if you ever import external weights.
 
 local RoPE = {}
 RoPE.__index = RoPE
@@ -28,9 +20,7 @@ function RoPE.new(config)
     if type(self.base) ~= "number" or self.base <= 1 then
         error("rope: 'base' must be a number > 1, got " .. tostring(self.base), 2)
     end
-
-    -- An odd head_dim leaves one trailing component unrotated (identity),
-    -- which is harmless and avoids a hard error on odd dim/heads splits.
+.
     self.pairs = floor(self.head_dim / 2)
 
     self.inv_freq = {}

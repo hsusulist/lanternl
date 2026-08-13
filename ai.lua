@@ -13,34 +13,39 @@ local function safe_require(name)
 end
 
 local modules = {
-    Tokenizer   = "tokenizer",
-    Data        = "data",
-    Matrix      = "matrix",
-    Tensor      = "tensor",
-    Tensor2     = "tensor2",
-    Embedding   = "embedding",
-    Positional  = "positional",
-    Linear      = "linear",
-    Attention   = "attention",
-    RMSNorm     = "rmsnorm",
-    SwiGLU      = "swiglu",
-    Block       = "block",
-    Transformer = "transformer",
-    Model       = "model",
-    NN          = "nn",
-    Optim       = "optim",
-    Optim2      = "optim2",
-    Train       = "train",
-    LMTrain     = "lmtrain",
-    GPU         = "gpu",
-    BLAS        = "blas",
-    LuaTL       = "luatl_adapter",
+    {"Matrix", "matrix"},
+    {"Tensor", "tensor"},
+    {"Tensor2", "tensor2"},
+    {"Tokenizer", "tokenizer"},
+    {"Data", "data"},
+    {"Embedding", "embedding"},
+    {"Positional", "positional"},
+    {"Linear", "linear"},
+    {"Attention", "attention"},
+    {"RMSNorm", "rmsnorm"},
+    {"SwiGLU", "swiglu"},
+    {"Block", "block"},
+    {"Transformer", "transformer"},
+    {"NN", "nn"},
+    {"Optim", "optim"},
+    {"Optim2", "optim2"},
+    {"Train", "train"},
+    {"LMTrain", "lmtrain"},
+    {"GPU", "gpu"},
+    {"BLAS", "blas"},
+    {"LuaTL", "luatl_adapter"},
+    {"RoPE", "rope"}
 }
 
-for upper_name, file_name in pairs(modules) do
-    local lib = safe_require(file_name)
-    ai[upper_name] = lib
-    ai[file_name]  = lib
+for _, m in ipairs(modules) do
+    local upper_name, file_name = m[1], m[2]
+    local ok, lib = pcall(require, file_name)
+    if ok then
+        ai[upper_name] = lib
+        ai[file_name]  = lib
+    else
+        print("[LanternL] Warning: Failed to load module '" .. file_name .. "': " .. tostring(lib))
+    end
 end
 
 function ai.help()

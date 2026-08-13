@@ -27,9 +27,6 @@ local function strip_cr(line)
     return (string.gsub(line, "\r$", ""))
 end
 
--- os.execute returns a number on Lua 5.1/LuaJIT (0 == success, but every
--- number is truthy) and (boolean, string, number) on 5.3+. The old
--- `if not ok` test could therefore never detect a failed upload.
 local function shell(cmd)
     local a, b, c = os.execute(cmd)
     if type(a) == "number" then return a == 0, a end
