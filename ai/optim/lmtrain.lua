@@ -7,6 +7,7 @@ LMTrain.__index = LMTrain
 
 local floor = math.floor
 local huge = math.huge
+local exp = math.exp
 local sformat = string.format
 local srep = string.rep
 
@@ -16,18 +17,28 @@ local DEFAULTS = {
     bar_style = 1, bar_len = 20, every = 1,
     patience = 0, min_delta = 0,
     verbose = true,
+    causal = true,        -- next-token training REQUIRES this
+    pos = "rope",         -- "rope" | "sinusoidal" | "none"
+    rope_base = 10000,
+    max_ctx = 0,          -- 0 = unlimited context during generation
 }
 
 local NILABLE = {
     data = true, log = true, stop_loss = true, stop_when = true,
     seed = true, on_stop = true, name = true,
+    temperature = true, top_k = true, top_p = true, max_seq = true,
 }
 
-local ARCH_KEYS = { vocab = true, dim = true, layers = true, heads = true, ffn = true }
+local ARCH_KEYS = {
+    vocab = true, dim = true, layers = true, heads = true, ffn = true,
+    causal = true, pos = true, rope_base = true, max_seq = true,
+}
 
 local RESERVED = {
     new = true, run = true, config = true, bar = true,
     reset = true, summary = true, parameters = true,
+    generate = true, save = true, load = true, push = true,
+    encode = true, decode = true,
 }
 
 local ALIASES = {
@@ -50,6 +61,12 @@ local ALIASES = {
     stop_when = "stop_when", ["until"] = "stop_when",
     patience = "patience", min_delta = "min_delta",
     verbose = "verbose", seed = "seed", name = "name", on_stop = "on_stop",
+    causal = "causal", mask = "causal", causal_mask = "causal",
+    pos = "pos", positional = "pos", position = "pos", pe = "pos",
+    rope_base = "rope_base", theta = "rope_base",
+    max_seq = "max_seq", ctx = "max_ctx", max_ctx = "max_ctx", context = "max_ctx",
+    temperature = "temperature", temp = "temperature",
+    top_k = "top_k", topk = "top_k", top_p = "top_p", topp = "top_p",
 }
 
 local BAR_CHARS = {
@@ -58,12 +75,56 @@ local BAR_CHARS = {
     [3] = { fill = "=", empty = " " },
 }
 
+local POS_MODES = { rope = true, rotary = true, sinusoidal = true, sin = true,
+                    absolute = true, abs = true, none = true, off = true }
+
 local function is_int(x)
     return type(x) == "number" and x == floor(x) and x == x and x ~= huge and x ~= -huge
 end
 
 local function is_finite(x)
     return type(x) == "number" and x == x and x ~= huge and x ~= -huge
+end
+
+--------------------------------------------------------------------------
+-- byte <-> token codec.
+-- id = byte + 1, so a text corpus maps onto ids 1..256 with vocab = 256.
+-- (The old codec used the raw byte, which produced id 0 for a NUL byte and
+-- then indexed the embedding table at a negative offset.)
+--------------------------------------------------------------------------
+function LMTrain.encode(text)
+    if type(text) ~= "string" then
+        error("LMTrain.encode: expected a string, got " .. type(text), 2)
+    end
+    local t = {}
+    for i = 1, #text do t[i] = string.byte(text, i) + 1 end
+    return t
+end
+
+function LMTrain.decode(tokens)
+    local chars = {}
+    for i = 1, #tokens do
+        local id = tokens[i]
+        if type(id) ~= "number" or id < 1 or id > 256 then
+            error(sformat("LMTrain.decode: token %d = %s cannot be a byte (need 1..256); "
+                .. "this model's vocab is larger than a byte alphabet", i, tostring(id)), 2)
+        end
+        chars[i] = string.char(id - 1)
+    end
+    return table.concat(chars)
+end
+
+local function coerce_data(config)
+    if type(config.data) == "string" then
+        config.data = LMTrain.encode(config.data)
+        if config.vocab == nil then config.vocab = 256 end
+    elseif type(config.data) == "table" and type(config.data[1]) == "string" then
+        local seqs = {}
+        for i = 1, #config.data do seqs[i] = LMTrain.encode(config.data[i]) end
+        config.data = seqs
+        if config.vocab == nil then config.vocab = 256 end
+    end
+    return config
 end
 
 local function resolve_aliases(config, who)
@@ -184,6 +245,19 @@ local function check_config(self, who)
     if self.dim % self.heads ~= 0 then
         error(sformat("LMTrain%s: dim (%d) must be divisible by heads (%d)", who, self.dim, self.heads), 3)
     end
+    if type(self.pos) ~= "string" or not POS_MODES[string.lower(self.pos)] then
+        error(sformat("LMTrain%s: 'pos' must be 'rope', 'sinusoidal' or 'none', got %s",
+            who, tostring(self.pos)), 3)
+    end
+    if string.lower(self.pos) == "rope" or string.lower(self.pos) == "rotary" then
+        if floor(self.dim / self.heads) < 2 then
+            error(sformat("LMTrain%s: RoPE needs dim/heads >= 2 (got dim=%d heads=%d)",
+                who, self.dim, self.heads), 3)
+        end
+    end
+    if type(self.causal) ~= "boolean" then
+        error(sformat("LMTrain%s: 'causal' must be true or false, got %s", who, tostring(self.causal)), 3)
+    end
     if not is_finite(self.lr) or self.lr <= 0 then
         error(sformat("LMTrain%s: 'lr' must be a positive finite number, got %s", who, tostring(self.lr)), 3)
     end
@@ -204,6 +278,9 @@ local function check_config(self, who)
     end
     if not is_finite(self.min_delta) or self.min_delta < 0 then
         error(sformat("LMTrain%s: 'min_delta' must be a non-negative number, got %s", who, tostring(self.min_delta)), 3)
+    end
+    if not is_int(self.max_ctx) or self.max_ctx < 0 then
+        error(sformat("LMTrain%s: 'max_ctx' must be a non-negative integer, got %s", who, tostring(self.max_ctx)), 3)
     end
     if self.log ~= nil and type(self.log) ~= "function" then
         error(sformat("LMTrain%s: 'log' must be a function(trainer), got %s", who, type(self.log)), 3)
@@ -255,10 +332,13 @@ function LMTrain:_build()
     local ok, model = pcall(Transformer.new, {
         vocab = self.vocab, dim = self.dim, layers = self.layers,
         heads = self.heads, ffn = self.ffn,
+        causal = self.causal, pos = self.pos,
+        rope_base = self.rope_base, max_seq = self.max_seq,
     })
     if not ok then
-        error(sformat("LMTrain: failed to build Transformer{ vocab=%d, dim=%d, layers=%d, heads=%d, ffn=%d }: %s",
-            self.vocab, self.dim, self.layers, self.heads, self.ffn, tostring(model)), 2)
+        error(sformat("LMTrain: failed to build Transformer{ vocab=%d, dim=%d, layers=%d, heads=%d, ffn=%d, pos=%s, causal=%s }: %s",
+            self.vocab, self.dim, self.layers, self.heads, self.ffn,
+            tostring(self.pos), tostring(self.causal), tostring(model)), 2)
     end
     if type(model) ~= "table" or type(model.forward) ~= "function" or type(model.parameters) ~= "function" then
         error("LMTrain: Transformer.new did not return a usable model (needs :forward and :parameters)", 2)
@@ -287,12 +367,8 @@ end
 
 function LMTrain.new(config)
     config = resolve_aliases(config or {}, "LMTrain")
-    if type(config.data) == "string" then
-        local t = {}
-        for i = 1, #config.data do t[i] = string.byte(config.data, i) end
-        config.data = t
-        if config.vocab == nil then config.vocab = 256 end
-    end
+    coerce_data(config)
+
     local self = setmetatable({}, LMTrain)
 
     self.history = {}
@@ -333,6 +409,7 @@ end
 
 function LMTrain:config(opts)
     opts = resolve_aliases(opts or {}, "LMTrain:config")
+    coerce_data(opts)
     local rebuild = false
     for key, val in pairs(opts) do
         self[key] = val
@@ -407,9 +484,10 @@ end
 
 function LMTrain:summary()
     return sformat(
-        "LMTrain%s: vocab=%d dim=%d layers=%d heads=%d ffn=%d | epochs=%d lr=%g decay=%s | epoch=%d loss=%s best=%s",
+        "LMTrain%s: vocab=%d dim=%d layers=%d heads=%d ffn=%d pos=%s causal=%s | epochs=%d lr=%g decay=%s | epoch=%d loss=%s best=%s",
         self.name and (" " .. tostring(self.name)) or "",
         self.vocab, self.dim, self.layers, self.heads, self.ffn,
+        tostring(self.pos), tostring(self.causal),
         self.epochs, self.base_lr or self.lr, tostring(self.lr_decay and true or false),
         self.epoch,
         self.loss and sformat("%.5f", self.loss) or "n/a",
@@ -422,6 +500,11 @@ function LMTrain:run()
     end
     check_config(self, ":run")
     local sequences = validate_data(self.data, self.vocab, ":run")
+
+    if self.causal == false and self.verbose then
+        print("LMTrain: warning -- causal = false with next-token training lets every "
+            .. "position attend to its own target. Loss will drop unrealistically fast.")
+    end
 
     if self._dirty or self.model == nil or self.sgd == nil then
         self:_build()
@@ -465,11 +548,12 @@ function LMTrain:run()
             local loss = Tensor.cross_entropy(logits, pair[2])
             loss:backward()
             local correct = 0
+            local ld, lcols = logits.data.data, logits.data.cols
             for r = 1, logits.data.rows do
-                local base = (r - 1) * logits.data.cols
-                local best_id, best_val = 1, -math.huge
-                for c = 1, logits.data.cols do
-                    local v = logits.data.data[base + c]
+                local base = (r - 1) * lcols
+                local best_id, best_val = 1, -huge
+                for c = 1, lcols do
+                    local v = ld[base + c]
                     if v > best_val then best_val, best_id = v, c end
                 end
                 if best_id == pair[2][r] then correct = correct + 1 end
@@ -561,92 +645,141 @@ function LMTrain:run()
     return self.model
 end
 
-function LMTrain:generate(seed_tokens, n)
-    local was_string = type(seed_tokens) == "string"
-    if was_string then
-        local t = {}
-        for i = 1, #seed_tokens do t[i] = string.byte(seed_tokens, i) end
-        seed_tokens = t
-    end
-    local tokens = {}
-    for i = 1, #seed_tokens do tokens[i] = seed_tokens[i] end
-
-    for _ = 1, n do
-        local logits = self.model:forward(tokens)
-        local last_row = (logits.data.rows - 1) * logits.data.cols
-        local best_id, best_val = 1, -math.huge
-        for j = 1, logits.data.cols do
-            local v = logits.data.data[last_row + j]
+--------------------------------------------------------------------------
+-- Next-token selection. temperature <= 0 (the default) means greedy, which
+-- is exactly the previous behaviour.
+--------------------------------------------------------------------------
+local function pick_token(row, base, cols, temperature, top_k, top_p)
+    if not temperature or temperature <= 0 then
+        local best_id, best_val = 1, -huge
+        for j = 1, cols do
+            local v = row[base + j]
             if v > best_val then best_val, best_id = v, j end
         end
-        tokens[#tokens + 1] = best_id
+        return best_id
     end
-    
+
+    local idx = {}
+    for j = 1, cols do idx[j] = j end
+
+    top_k = top_k or 0
+    top_p = top_p or 0
+    if (top_k > 0 and top_k < cols) or (top_p > 0 and top_p < 1) then
+        table.sort(idx, function(x, y) return row[base + x] > row[base + y] end)
+    end
+
+    local n = cols
+    if top_k > 0 and top_k < n then n = top_k end
+
+    local max_val = -huge
+    for r = 1, n do
+        local v = row[base + idx[r]]
+        if v > max_val then max_val = v end
+    end
+
+    local probs, sum = {}, 0
+    for r = 1, n do
+        local e = exp((row[base + idx[r]] - max_val) / temperature)
+        probs[r] = e
+        sum = sum + e
+    end
+
+    local limit = n
+    if top_p > 0 and top_p < 1 then
+        local acc = 0
+        for r = 1, n do
+            acc = acc + probs[r] / sum
+            if acc >= top_p then
+                limit = r
+                break
+            end
+        end
+    end
+
+    local norm = 0
+    for r = 1, limit do norm = norm + probs[r] end
+
+    local target = math.random() * norm
+    local acc = 0
+    for r = 1, limit do
+        acc = acc + probs[r]
+        if acc >= target then return idx[r] end
+    end
+    return idx[limit]
+end
+
+-- train:generate(seed, n)  -- unchanged
+-- train:generate(seed, n, { temperature = 0.8, top_k = 40, top_p = 0.95,
+--                           stop = <token id>, ctx = 256 })
+function LMTrain:generate(seed_tokens, n, opts)
+    if self.model == nil then
+        error("LMTrain:generate: no model yet -- call train:run() or train:load(path) first", 2)
+    end
+    opts = opts or {}
+    n = n or 1
+    if not is_int(n) or n < 0 then
+        error("LMTrain:generate: n must be a non-negative integer, got " .. tostring(n), 2)
+    end
+
+    local was_string = type(seed_tokens) == "string"
     if was_string then
-        local chars = {}
-        for i = 1, #tokens do
-            chars[i] = string.char(tokens[i])
-        end
-        return table.concat(chars)
+        seed_tokens = LMTrain.encode(seed_tokens)
     end
-    
+    if type(seed_tokens) ~= "table" or #seed_tokens == 0 then
+        error("LMTrain:generate: need at least one seed token", 2)
+    end
+
+    local tokens = {}
+    for i = 1, #seed_tokens do
+        local tok = seed_tokens[i]
+        if not is_int(tok) or tok < 1 or tok > self.vocab then
+            error(sformat("LMTrain:generate: seed token %d = %s is outside 1..%d",
+                i, tostring(tok), self.vocab), 2)
+        end
+        tokens[i] = tok
+    end
+
+    local temperature = opts.temperature or self.temperature
+    local top_k = opts.top_k or self.top_k
+    local top_p = opts.top_p or self.top_p
+    local max_ctx = opts.ctx or opts.max_ctx or self.max_ctx or 0
+
+    local stop = opts.stop
+    if type(stop) == "string" and #stop == 1 then stop = string.byte(stop) + 1 end
+
+    for _ = 1, n do
+        -- No KV cache yet: the whole prefix is re-forwarded each step.
+        -- max_ctx keeps that from growing without bound on long generations.
+        local window = tokens
+        if max_ctx > 0 and #tokens > max_ctx then
+            window = {}
+            local first = #tokens - max_ctx + 1
+            for i = first, #tokens do window[#window + 1] = tokens[i] end
+        end
+
+        local logits = self.model:forward(window)
+        local last_row = (logits.data.rows - 1) * logits.data.cols
+        local next_id = pick_token(logits.data.data, last_row, logits.data.cols,
+            temperature, top_k, top_p)
+
+        tokens[#tokens + 1] = next_id
+        if stop ~= nil and next_id == stop then break end
+    end
+
+    if was_string then
+        return LMTrain.decode(tokens)
+    end
+
     return tokens
-end
-
-function LMTrain:save(path)
-    local f = io.open(path, "w")
-    f:write(string.format("vocab=%d dim=%d layers=%d heads=%d ffn=%d\n",
-        self.vocab, self.dim, self.layers, self.heads, self.ffn))
-    for i = 1, #self.params do
-        local d = self.params[i].data.data
-        local total = self.params[i].data.rows * self.params[i].data.cols
-        local parts = {}
-        for k = 1, total do parts[k] = tostring(d[k]) end
-        f:write(table.concat(parts, ",") .. "\n")
-    end
-    f:close()
-    print("Saved to " .. path)
-    return self
-end
-
-function LMTrain:load(path)
-    local f = io.open(path, "r")
-    if not f then error("LMTrain:load: cannot open " .. path, 2) end
-    local header = f:read("*l")
-    local vocab, dim, layers, heads, ffn =
-        header:match("vocab=(%d+) dim=(%d+) layers=(%d+) heads=(%d+) ffn=(%d+)")
-    self.vocab, self.dim, self.layers, self.heads, self.ffn =
-        tonumber(vocab), tonumber(dim), tonumber(layers), tonumber(heads), tonumber(ffn)
-    self:_build()
-    for i = 1, #self.params do
-        local line = f:read("*l")
-        local d, j = self.params[i].data.data, 0
-        for num_str in line:gmatch("[^,]+") do
-            j = j + 1
-            d[j] = tonumber(num_str)
-        end
-    end
-    f:close()
-    print("Loaded from " .. path)
-    return self
-end
-
-function LMTrain:push(repo_id, token)
-    self:save("lanternl_model.txt")
-    local cmd = token
-        and string.format('huggingface-cli upload %s lanternl_model.txt lanternl_model.txt --token %s', repo_id, token)
-        or string.format('huggingface-cli upload %s lanternl_model.txt lanternl_model.txt', repo_id)
-    local ok = os.execute(cmd)
-    if not ok then
-        print("LMTrain:push: upload failed — check huggingface-cli is installed and you're logged in")
-    end
-    return ok
 end
 
 function LMTrain:parameters()
     if self._dirty or self.model == nil then self:_build() end
     return self.params
 end
+
+-- checkpoint + hub I/O live in lmio.lua (adds :save, :load, :push)
+require("lmio")(LMTrain)
 
 setmetatable(LMTrain, {
     __call = function(_, ...) return LMTrain.new(...) end
