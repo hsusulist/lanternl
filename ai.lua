@@ -48,6 +48,28 @@ for _, m in ipairs(modules) do
     end
 end
 
+function ai.profile()
+    local luaTL = ai.LuaTL
+    if not luaTL or not luaTL.available then
+        print("Profiling: luaTL (GPU) is not active. Running in pure CPU mode.")
+        return
+    end
+
+    local p = luaTL.get_profile()
+    print("=========================================")
+    print("  luaTL GPU Profiler")
+    print("=========================================")
+    print(string.format("  VRAM Allocations : %d", p.allocs))
+    print(string.format("  Host -> Device   : %.4f sec", p.h2d))
+    print(string.format("  Device -> Host   : %.4f sec", p.d2h))
+    print(string.format("  Compute Kernels  : %.4f sec", p.compute))
+    print("=========================================")
+    if p.h2d > p.compute * 2 then
+        print("  ⚠️ Warning: Data transfer is bottlenecking compute.")
+        print("     Consider using larger batch sizes.")
+    end
+end
+
 function ai.help()
     print([=[
 1. QUICKSTART (Text to AI in 5 lines)

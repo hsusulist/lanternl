@@ -264,87 +264,94 @@ return windows
 end
 
 local function check_config(self, who)
-local function pos_int(key)
-    local v = self[key]
-    if not is_int(v) or v < 1 then
-        error(sformat("LMTrain%s: '%s' must be a positive integer, got %s", who, key, tostring(v)), 4)
-    end
-end
-pos_int("vocab"); pos_int("dim"); pos_int("layers")
-pos_int("heads"); pos_int("ffn"); pos_int("epochs")
-pos_int("max_seq"); pos_int("batch_size")
+    local function check_config(self, who)
+        local function pos_int(key)
+            local v = self[key]
+            if not is_int(v) or v < 1 then
+                error(sformat("LMTrain%s: '%s' must be a positive integer, got %s", who, key, tostring(v)), 4)
+            end
+        end
 
-if self.dim % self.heads ~= 0 then
-    error(sformat("LMTrain%s: dim (%d) must be divisible by heads (%d)", who, self.dim, self.heads), 3)
-end
-if type(self.pos) ~= "string" or not POS_MODES[string.lower(self.pos)] then
-    error(sformat("LMTrain%s: 'pos' must be 'rope', 'sinusoidal', 'absolute' or 'none', got %s",
-        who, tostring(self.pos)), 3)
-end
-local pl = string.lower(self.pos)
-if (pl == "rope" or pl == "rotary") and floor(self.dim / self.heads) < 2 then
-    error(sformat("LMTrain%s: RoPE needs dim/heads >= 2 (got dim=%d heads=%d)",
-        who, self.dim, self.heads), 3)
-end
-if type(self.sched) ~= "string" or not SCHEDULES[string.lower(self.sched)] then
-    error(sformat("LMTrain%s: 'sched' must be 'cosine', 'linear' or 'none', got %s",
-        who, tostring(self.sched)), 3)
-end
-if type(self.causal) ~= "boolean" then
-    error(sformat("LMTrain%s: 'causal' must be true or false, got %s", who, tostring(self.causal)), 3)
-end
-if not is_finite(self.lr) or self.lr <= 0 then
-    error(sformat("LMTrain%s: 'lr' must be a positive finite number, got %s", who, tostring(self.lr)), 3) 
-end
-if not is_finite(self.lr_min) or self.lr_min < 0 then 
-    error(sformat("LMTrain%s: 'lr_min' must be a non-negative number, got %s", who, tostring(self.lr_min)), 3) 
-end
-if self.lr_min > self.lr then 
-    error(sformat("LMTrain%s: 'lr_min' (%g) cannot exceed 'lr' (%g)", who, self.lr_min, self.lr), 3) 
-end
-if not is_finite(self.warmup) or self.warmup < 0 or self.warmup >= 1 then 
-    error(sformat("LMTrain%s: 'warmup' must be a fraction in [0,1), got %s", who, tostring(self.warmup)), 3) 
-end
-if not is_finite(self.val_split) or self.val_split < 0 or self.val_split >= 1 then 
-    error(sformat("LMTrain%s: 'val_split' must be a fraction in [0,1), got %s", who, tostring(self.val_split)), 3) 
-end
-if not is_finite(self.dropout) or self.dropout < 0 or self.dropout >= 1 then 
-    error(sformat("LMTrain%s: 'dropout' must be in [0,1), got %s", who, tostring(self.dropout)), 3) 
-end
-if self.stride ~= nil and (not is_int(self.stride) or self.stride < 1) then 
-    error(sformat("LMTrain%s: 'stride' must be a positive integer, got %s", who, tostring(self.stride)), 3) 
-end
-if not is_int(self.every) or self.every < 1 then 
-    error(sformat("LMTrain%s: 'every' must be a positive integer, got %s", who, tostring(self.every)), 3) 
-end
-if not is_int(self.eval_every) or self.eval_every < 1 then 
-    error(sformat("LMTrain%s: 'eval_every' must be a positive integer, got %s", who, tostring(self.eval_every)), 3) 
-end
-if not is_int(self.bar_len) or self.bar_len < 1 then 
-    error(sformat("LMTrain%s: 'bar_len' must be a positive integer, got %s", who, tostring(self.bar_len)), 3) 
-end
-if not is_int(self.patience) or self.patience < 0 then 
-    error(sformat("LMTrain%s: 'patience' must be a non-negative integer, got %s", who, tostring(self.patience)), 3) 
-end
-if not is_finite(self.min_delta) or self.min_delta < 0 then 
-    error(sformat("LMTrain%s: 'min_delta' must be a non-negative number, got %s", who, tostring(self.min_delta)), 3) 
-end
-for _, key in ipairs({ "log", "stop_when", "on_stop" }) do 
-    if self[key] ~= nil and type(self[key]) ~= "function" then 
-        error(sformat("LMTrain%s: '%s' must be a function, got %s", who, key, type(self[key])), 3) 
+        pos_int("vocab"); pos_int("dim"); pos_int("layers")
+        pos_int("heads"); pos_int("ffn"); pos_int("epochs")
+        pos_int("max_seq"); pos_int("batch_size")
+
+        -- pos_int("max_seq") only ensures it is >= 1.
+        -- Next-token prediction needs at least 2 tokens to work.
+        if self.max_seq < 2 then
+            error(sformat("LMTrain%s: 'max_seq' must be at least 2 for next-token prediction, got %d", who, self.max_seq), 3)
+        end
+
+        if self.dim % self.heads ~= 0 then
+            error(sformat("LMTrain%s: dim (%d) must be divisible by heads (%d)", who, self.dim, self.heads), 3)
+        end
+    if type(self.pos) ~= "string" or not POS_MODES[string.lower(self.pos)] then
+        error(sformat("LMTrain%s: 'pos' must be 'rope', 'sinusoidal', 'absolute' or 'none', got %s",
+            who, tostring(self.pos)), 3)
+    end
+    local pl = string.lower(self.pos)
+    if (pl == "rope" or pl == "rotary") and floor(self.dim / self.heads) < 2 then
+        error(sformat("LMTrain%s: RoPE needs dim/heads >= 2 (got dim=%d heads=%d)", who, self.dim, self.heads), 3)
+    end
+    if type(self.sched) ~= "string" or not SCHEDULES[string.lower(self.sched)] then
+        error(sformat("LMTrain%s: 'sched' must be 'cosine', 'linear' or 'none', got %s",
+            who, tostring(self.sched)), 3)
+    end
+    if type(self.causal) ~= "boolean" then
+        error(sformat("LMTrain%s: 'causal' must be true or false, got %s", who, tostring(self.causal)), 3)
+    end
+    if not is_finite(self.lr) or self.lr <= 0 then
+        error(sformat("LMTrain%s: 'lr' must be a positive finite number, got %s", who, tostring(self.lr)), 3) 
+    end
+    if not is_finite(self.lr_min) or self.lr_min < 0 then 
+        error(sformat("LMTrain%s: 'lr_min' must be a non-negative number, got %s", who, tostring(self.lr_min)), 3) 
+    end
+    if self.lr_min > self.lr then 
+        error(sformat("LMTrain%s: 'lr_min' (%g) cannot exceed 'lr' (%g)", who, self.lr_min, self.lr), 3) 
+    end
+    if not is_finite(self.warmup) or self.warmup < 0 or self.warmup >= 1 then 
+        error(sformat("LMTrain%s: 'warmup' must be a fraction in [0,1), got %s", who, tostring(self.warmup)), 3) 
+    end
+    if not is_finite(self.val_split) or self.val_split < 0 or self.val_split >= 1 then 
+        error(sformat("LMTrain%s: 'val_split' must be a fraction in [0,1), got %s", who, tostring(self.val_split)), 3) 
+    end
+    if not is_finite(self.dropout) or self.dropout < 0 or self.dropout >= 1 then 
+        error(sformat("LMTrain%s: 'dropout' must be in [0,1), got %s", who, tostring(self.dropout)), 3) 
+    end
+    if self.stride ~= nil and (not is_int(self.stride) or self.stride < 1) then 
+        error(sformat("LMTrain%s: 'stride' must be a positive integer, got %s", who, tostring(self.stride)), 3) 
+    end
+    if not is_int(self.every) or self.every < 1 then 
+        error(sformat("LMTrain%s: 'every' must be a positive integer, got %s", who, tostring(self.every)), 3) 
+    end
+    if not is_int(self.eval_every) or self.eval_every < 1 then 
+        error(sformat("LMTrain%s: 'eval_every' must be a positive integer, got %s", who, tostring(self.eval_every)), 3) 
+    end
+    if not is_int(self.bar_len) or self.bar_len < 1 then 
+        error(sformat("LMTrain%s: 'bar_len' must be a positive integer, got %s", who, tostring(self.bar_len)), 3) 
+    end
+    if not is_int(self.patience) or self.patience < 0 then 
+        error(sformat("LMTrain%s: 'patience' must be a non-negative integer, got %s", who, tostring(self.patience)), 3) 
+    end
+    if not is_finite(self.min_delta) or self.min_delta < 0 then 
+        error(sformat("LMTrain%s: 'min_delta' must be a non-negative number, got %s", who, tostring(self.min_delta)), 3) 
+    end
+    for _, key in ipairs({ "log", "stop_when", "on_stop" }) do 
+        if self[key] ~= nil and type(self[key]) ~= "function" then 
+            error(sformat("LMTrain%s: '%s' must be a function, got %s", who, key, type(self[key])), 3) 
+        end 
+    end
+    if self.stop_loss ~= nil and not is_finite(self.stop_loss) then 
+        error(sformat("LMTrain%s: 'stop_loss' must be a finite number, got %s", who, tostring(self.stop_loss)), 3) 
+    end
+    local style = self.bar_style 
+    if type(style) == "table" then 
+        if type(style.fill) ~= "string" or type(style.empty) ~= "string" then 
+            error(sformat("LMTrain%s: custom bar style needs string 'fill' and 'empty' fields", who), 3) 
+        end 
+    elseif BAR_CHARS[style] == nil then 
+        error(sformat("LMTrain%s: unknown bar style %s (expected 1, 2, 3 or { fill = , empty = })", who, tostring(style)), 3) 
     end 
-end
-if self.stop_loss ~= nil and not is_finite(self.stop_loss) then 
-    error(sformat("LMTrain%s: 'stop_loss' must be a finite number, got %s", who, tostring(self.stop_loss)), 3) 
-end
-local style = self.bar_style 
-if type(style) == "table" then 
-    if type(style.fill) ~= "string" or type(style.empty) ~= "string" then 
-        error(sformat("LMTrain%s: custom bar style needs string 'fill' and 'empty' fields", who), 3) 
-    end 
-elseif BAR_CHARS[style] == nil then 
-    error(sformat("LMTrain%s: unknown bar style %s (expected 1, 2, 3 or { fill = , empty = })", who, tostring(style)), 3) 
-end 
 end
 
 local function fmt_time(s)
@@ -354,34 +361,34 @@ return sformat("%dh%02dm", floor(s / 3600), floor((s % 3600) / 60))
 end
 
 local function default_log(t)
-local style = t.bar_style
-if type(style) ~= "table" then style = BAR_CHARS[style] or BAR_CHARS[1] end
-local total = t.epochs
-local bar_len = t.bar_len or 20
-local filled = 0
-if total and total > 0 then filled = floor((t.epoch / total) * bar_len) end
-if filled < 0 then filled = 0 end
-if filled > bar_len then filled = bar_len end
-local bar_str = srep(style.fill, filled) .. srep(style.empty, bar_len - filled)
+    local style = t.bar_style
+    if type(style) ~= "table" then style = BAR_CHARS[style] or BAR_CHARS[1] end
+    local total = t.epochs
+    local bar_len = t.bar_len or 20
+    local filled = 0
+    if total and total > 0 then filled = floor((t.epoch / total) * bar_len) end
+    if filled < 0 then filled = 0 end
+    if filled > bar_len then filled = bar_len end
+    local bar_str = srep(style.fill, filled) .. srep(style.empty, bar_len - filled)
 
-local ppl = t.loss and exp(t.loss < 30 and t.loss or 30) or 0
-local eta = 0
-if t.epoch > 0 and total and total > t.epoch then
-    eta = (t.elapsed / t.epoch) * (total - t.epoch)
-end
-local line = sformat("[%s] %d/%d | loss %.4f | ppl %8.2f | acc %5.1f%% | lr %.2e | %s tok/s | eta %s%s",
-    bar_str, t.epoch, total, t.loss or 0, ppl, t.accuracy or 0, t.cur_lr or 0,
-    sformat("%7.0f", t.tokens_per_sec or 0), fmt_time(eta), t.is_best and " *" or "")
-if t.val_loss then
-    line = line .. sformat(" | val %.4f", t.val_loss)
-end
-if t.inplace_bar and t.epoch < (total or 0) then
-    io.write("\r", line)
-    io.flush()
-else
-    io.write("\r", line, "\n")
-    io.flush()
-end
+    local ppl = t.loss and exp(t.loss < 30 and t.loss or 30) or 0
+    local eta = 0
+    if t.epoch > 0 and total and total > t.epoch then
+        eta = (t.elapsed / t.epoch) * (total - t.epoch)
+    end
+    local line = sformat("[%s] %d/%d | loss %.4f | ppl %8.2f | acc %5.1f%% | lr %.2e | %s tok/s | eta %s%s",
+        bar_str, t.epoch, total, t.loss or 0, ppl, t.accuracy or 0, t.cur_lr or 0,
+        sformat("%7.0f", t.tokens_per_sec or 0), fmt_time(eta), t.is_best and " *" or "")
+    if t.val_loss then
+        line = line .. sformat(" | val %.4f", t.val_loss)
+    end
+    if t.inplace_bar and t.epoch < (total or 0) then
+        io.write("\r", line)
+        io.flush()
+    else
+        io.write("\r", line, "\n")
+        io.flush()
+    end
 end
 
 local function snapshot(params)
