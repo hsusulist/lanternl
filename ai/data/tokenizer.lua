@@ -36,9 +36,16 @@ function tokenizer:log(msg)
 end
 
 function tokenizer:train()
+    self.merges = {}
+    self.vocab = {}
+    self.inv_vocab = {}
+
     local text = self.text
     if not text and self.text_file then
         local f = io.open(self.text_file, "r")
+        if not f then
+            error("tokenizer: cannot open text_file '" .. self.text_file .. "'", 2)
+        end
         text = f:read("*a")
         f:close()
     end
@@ -120,6 +127,21 @@ function tokenizer:train()
         end
     end
 
+    -- Build the final integer vocabulary
+    local function add_token(t)
+        if not self.vocab[t] then
+            self.vocab[t] = #self.inv_vocab + 1
+            table.insert(self.inv_vocab, t)
+        end
+    end
+
+    -- FIX 3: Cleaned up the indentation here so it's readable
+    for _, t in ipairs(self.special_tokens) do add_token(t) end
+    for i = 0, 255 do add_token(string.char(i)) end
+    add_token("</w>")
+    for _, m in ipairs(self.merges) do add_token(m[1] .. m[2]) end
+
+    self.vocab_size = #self.inv_vocab
     return self
 end
 
@@ -146,10 +168,22 @@ function tokenizer:encode(text)
         end
 
         for _, t in ipairs(tokens) do
-            table.insert(result, t)
+            table.insert(result, self.vocab[t] or self.vocab["<unk>"])
         end
     end
     return result
+end
+
+function tokenizer:decode(tokens)
+    local text = {}
+    for _, id in ipairs(tokens) do
+        local t = self.inv_vocab[id]
+        if t then
+            table.insert(text, t:gsub("</w>", " "))
+        end
+    end
+    local result = table.concat(text)
+    return result:gsub("%s+", " "):match("^%s*(.-)%s*$")
 end
 
 function tokenizer:save(path)

@@ -64,7 +64,7 @@ local ALIASES = {
     causal = "causal", mask = "causal", causal_mask = "causal",
     pos = "pos", positional = "pos", position = "pos", pe = "pos",
     rope_base = "rope_base", theta = "rope_base",
-    max_seq = "max_seq", ctx = "max_ctx", max_ctx = "max_ctx", context = "max_ctx",
+    max_seq = "max_seq", ctx = "max_seq", max_ctx = "max_seq", context = "max_seq",
     temperature = "temperature", temp = "temperature",
     top_k = "top_k", topk = "top_k", top_p = "top_p", topp = "top_p",
 }
@@ -115,14 +115,25 @@ function LMTrain.decode(tokens)
 end
 
 local function coerce_data(config)
+    local function encode_text(text)
+        if config.tokenizer then
+            return config.tokenizer:encode(text)
+        end
+        return LMTrain.encode(text)
+    end
+
     if type(config.data) == "string" then
-        config.data = LMTrain.encode(config.data)
-        if config.vocab == nil then config.vocab = 256 end
+        config.data = encode_text(config.data)
+        if config.vocab == nil then 
+            config.vocab = config.tokenizer and config.tokenizer.vocab_size or 256 
+        end
     elseif type(config.data) == "table" and type(config.data[1]) == "string" then
         local seqs = {}
-        for i = 1, #config.data do seqs[i] = LMTrain.encode(config.data[i]) end
+        for i = 1, #config.data do seqs[i] = encode_text(config.data[i]) end
         config.data = seqs
-        if config.vocab == nil then config.vocab = 256 end
+        if config.vocab == nil then 
+            config.vocab = config.tokenizer and config.tokenizer.vocab_size or 256 
+        end
     end
     return config
 end
@@ -563,6 +574,17 @@ function LMTrain:run()
             total_loss = total_loss + loss_value(loss, epoch)
         end
 
+        if nseq > 1 then
+            local inv_nseq = 1 / nseq
+            for _, p in ipairs(self.params) do
+                local total = p.grad.rows * p.grad.cols
+                local pg = p.grad.data
+                for k = 1, total do
+                    pg[k] = pg[k] * inv_nseq
+                end
+            end
+        end
+
         sgd.step()
 
         local avg_loss = total_loss / nseq
@@ -708,9 +730,6 @@ local function pick_token(row, base, cols, temperature, top_k, top_p)
     return idx[limit]
 end
 
--- train:generate(seed, n)  -- unchanged
--- train:generate(seed, n, { temperature = 0.8, top_k = 40, top_p = 0.95,
---                           stop = <token id>, ctx = 256 })
 function LMTrain:generate(seed_tokens, n, opts)
     if self.model == nil then
         error("LMTrain:generate: no model yet -- call train:run() or train:load(path) first", 2)
@@ -748,8 +767,6 @@ function LMTrain:generate(seed_tokens, n, opts)
     if type(stop) == "string" and #stop == 1 then stop = string.byte(stop) + 1 end
 
     for _ = 1, n do
-        -- No KV cache yet: the whole prefix is re-forwarded each step.
-        -- max_ctx keeps that from growing without bound on long generations.
         local window = tokens
         if max_ctx > 0 and #tokens > max_ctx then
             window = {}
@@ -767,6 +784,9 @@ function LMTrain:generate(seed_tokens, n, opts)
     end
 
     if was_string then
+        if self.tokenizer then
+            return self.tokenizer:decode(tokens)
+        end
         return LMTrain.decode(tokens)
     end
 

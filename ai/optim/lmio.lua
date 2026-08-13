@@ -1,14 +1,9 @@
--- lmio.lua -- checkpoint save/load and Hugging Face upload for LMTrain.
--- Usage (from lmtrain.lua):  require("lmio")(LMTrain)
-
 local sformat = string.format
 local huge = math.huge
 
 local FORMAT_TAG = "lanternl-checkpoint"
 local FORMAT_VERSION = 2
 
--- "%.17g" round-trips an IEEE double exactly; tostring() uses %.14g and
--- silently truncated ~3 digits off every weight on each save/load cycle.
 local function fmt_num(v, prec)
     if v ~= v then return "nan" end
     if v == huge then return "inf" end
@@ -184,7 +179,7 @@ return function(LMTrain)
         return self
     end
 
-    function LMTrain:push(repo_id, token, opts)
+    function LMTrain:push(repo_id, opts)
         if type(repo_id) ~= "string" or not string.find(repo_id, "^[%w%-%._]+/[%w%-%._]+$") then
             error("LMTrain:push: repo_id must look like 'user/model', got " .. tostring(repo_id), 2)
         end
@@ -192,12 +187,10 @@ return function(LMTrain)
         local file = opts.file or "lanternl_model.txt"
         self:save(file, opts)
 
-        -- Note: a token passed here lands in the OS process list. Prefer
-        -- `hf auth login` (or `huggingface-cli login`) once, then omit it.
-        local suffix = token and (" --token " .. token) or ""
+        -- Users must run `hf auth login` or `huggingface-cli login` once in their terminal.
         local cmds = {
-            sformat('hf upload %s %s %s%s', repo_id, file, file, suffix),
-            sformat('huggingface-cli upload %s %s %s%s', repo_id, file, file, suffix),
+            sformat('hf upload %s %s %s', repo_id, file, file),
+            sformat('huggingface-cli upload %s %s %s', repo_id, file, file),
         }
 
         for i = 1, #cmds do
@@ -210,8 +203,8 @@ return function(LMTrain)
             end
         end
 
-        print("LMTrain:push: upload failed -- check that the 'hf' CLI is installed "
-            .. "(pip install -U huggingface_hub) and that you are logged in.")
+        print("LMTrain:push: upload failed -- ensure 'hf' CLI is installed "
+            .. "and you are logged in via `hf auth login`.")
         return false
     end
 

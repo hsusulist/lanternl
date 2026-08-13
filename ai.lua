@@ -44,36 +44,42 @@ for upper_name, file_name in pairs(modules) do
 end
 
 function ai.help()
-    -- Using [=[ ]=] so we can use [[ ]] inside the string if needed
     print([=[
-====================================================================
-  🏮 LANTERNL: The Pure-Lua AI Ecosystem
-  No Python. No bloat. Just LuaJIT and CUDA.
-====================================================================
-
-1. THE 5-SECOND QUICKSTART (Text to AI)
+1. QUICKSTART (Text to AI in 5 lines)
 --------------------------------------------------------------------
 local ai = require("ai")
 
--- Pass a string, auto-size the AI, train, and generate!
 local model = ai.LMTrain {
     data = "hello world, this is lua ai!",
-    preset = "auto",   -- Automatically picks model dimensions
+    preset = "auto",   -- Auto-sizes the model dimensions
     epochs = 300
 }
 
-model:run() -- Watch the progress bar!
-
--- Give it a seed, and it generates text!
-print( model:generate("hello", 10) )
+model:run()             -- Watch the progress bar!
+print(model:generate("hello", 10)) -- Generate text!
 
 
-2. DOWNLOADING REAL DATA (HuggingFace)
+2. TRAINING WITH A TOKENIZER (For larger texts)
 --------------------------------------------------------------------
--- Auto-discovers files, reads Parquet/CSV/TXT, limits to 500MB
+-- Train a BPE Tokenizer on your text
+local tok = ai.Tokenizer.new { text = "your long text here", vocab_size = 500 }
+tok:train()
+
+-- Pass the tokenizer to LMTrain! It handles encoding/decoding automatically.
+local trainer = ai.LMTrain {
+    data = "your long text here",
+    tokenizer = tok,
+    epochs = 100
+}
+trainer:run()
+print(trainer:generate("your", 20))
+
+
+3. DOWNLOADING DATASETS (HuggingFace)
+--------------------------------------------------------------------
+-- Auto-discovers files, parses Parquet/CSV/TXT, limits to 500MB
 local dataset = ai.Data("your_username/your_dataset", "500MB")
 
--- Config your batch size and attach a tokenizer
 local tok = ai.Tokenizer.new { text_file = dataset.files[1], vocab_size = 1000 }
 tok:train()
 
@@ -81,17 +87,17 @@ dataset:config { batch_size = 8, tokenizer = tok }
 local batches = dataset:batches()
 
 
-3. ADVANCED TRAINING & EARLY STOPPING
+4. ADVANCED TRAINING & EARLY STOPPING
 --------------------------------------------------------------------
 local trainer = ai.LMTrain {
     data = "your data here",
     epochs = 1000,
-    lr = 0.01,
+    lr = 0.01,           -- SGD learning rate
     lr_decay = true,     -- Slow down learning over time
     stop_loss = 0.05,    -- Stop if loss hits 0.05
     patience = 50,       -- Stop if no improvement for 50 epochs
-    bar_style = 2,       -- 1=#, 2=▓▒, 3==
-    every = 10           -- Print progress every 10 epochs
+    max_seq = 256,       -- Context window size
+    bar_style = 2        -- 1=#, 2=blocks, 3==
 }
 
 -- Custom Logging (access internal state)
@@ -104,32 +110,31 @@ trainer:config {
 trainer:run()
 
 
-4. SAVE, LOAD, AND PUSH TO HUGGINGFACE
+5. SAVE, LOAD, AND PUSH TO HUGGINGFACE
 --------------------------------------------------------------------
 trainer:save("my_lua_model.txt")
 trainer:load("my_lua_model.txt")
 
--- Push your trained model back to HuggingFace Hub!
-trainer:push("your_username/your_model_repo", "hf_your_token_here")
+-- Push to HuggingFace Hub (Requires running 'hf auth login' in your terminal first)
+trainer:push("your_username/your_model_repo")
 
 
-5. CHECK GPU / HARDWARE STATUS
+6. CHECK GPU / HARDWARE STATUS
 --------------------------------------------------------------------
--- See if your CUDA (luaTL) or BLAS backends loaded successfully
 for _, b in ipairs(ai.Matrix.backends()) do
     print(string.format("Backend: %-15s | Available: %-5s | Reason: %s", 
           b.name, tostring(b.available), b.reason))
 end
 
 
-6. CORE MODULES REFERENCE (ai.X)
+7. CORE MODULES (ai.X)
 --------------------------------------------------------------------
   ai.LMTrain      : High-level Trainer & Generator
   ai.Data         : Dataset downloader & batcher
   ai.Tokenizer    : BPE Tokenizer (train, encode, decode)
-  ai.Transformer  : Raw Transformer model architecture
+  ai.Transformer  : Raw Transformer architecture (RoPE, Causal, RMSNorm)
   ai.Matrix       : CPU/GPU Matrix math engine
-  ai.Optim2       : Optimizers (SGD, AdamW, etc.)
+  ai.Optim2       : Optimizers (Currently SGD)
 
 Type `ai.h()` to see this menu anytime!
 ====================================================================
