@@ -58,6 +58,49 @@ local loss = Tensor.cross_entropy(ce_logits, {1}) -- Target is index 1
 -- loss = -log(softmax(2.0))
 assert_equal(loss.data.data[1], 0.417, "Cross Entropy Loss", 1e-2)
 
+-- Add these to the bottom of tests.lua, right before the final print results
+
+print("\n--- Advanced Tests ---")
+
+-- 5. Tokenizer Round-Trip
+local Tokenizer = require("tokenizer")
+local tok = Tokenizer.new { text = "hello world", vocab_size = 100 }
+tok:train()
+local ids = tok:encode("hello")
+assert_equal(#ids > 0, true, "Tokenizer Encode Produces IDs")
+local txt = tok:decode(ids)
+assert_equal(type(txt), "string", "Tokenizer Decode Returns String")
+
+-- 6. Bad Config Rejection
+local LMTrain = require("lmtrain")
+local ok, err = pcall(function()
+    -- 64 % 3 != 0, should throw an error
+    LMTrain.new { dim = 64, heads = 3, data = "test data" }
+end)
+assert_equal(ok, false, "Bad Config Rejection (dim % heads)")
+
+local ok2 = pcall(function()
+    -- max_seq < 2, should throw an error
+    LMTrain.new { data = "test", max_seq = 1 }
+end)
+assert_equal(ok2, false, "Bad Config Rejection (max_seq < 2)")
+
+-- 7. RoPE Angle Correctness
+-- For position 0, cos(0) = 1, sin(0) = 0, so RoPE should be identity
+local RoPE = require("rope")
+local rope = RoPE.new { head_dim = 4, base = 10000 }
+local cos_0, sin_0 = rope:rows(1)
+assert_equal(cos_0[1][1], 1.0, "RoPE Angle pos 0 (cos=1)")
+assert_equal(sin_0[1][1], 0.0, "RoPE Angle pos 0 (sin=0)")
+
+-- 8. Gradient NaN Check
+local nan_tensor = Tensor.from({math.huge, math.huge})
+local w = Tensor.from({0.5, 0.5})
+local y = Tensor.matmul(nan_tensor, w)
+-- We expect a number, but if it's NaN, we catch it
+local is_nan = (y.data.data[1] ~= y.data.data[1])
+assert_equal(is_nan, true, "NaN Detection in Forward Pass")
+
 print("=========================================")
 print(string.format("Results: %d passed, %d failed", passes, fails))
 if fails > 0 then os.exit(1) else os.exit(0) end
