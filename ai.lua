@@ -70,6 +70,48 @@ function ai.profile()
     end
 end
 
+function ai.benchmark()
+    local matrix = ai.Matrix
+    print("=========================================")
+    print("  LanternL CPU/GPU Benchmark")
+    print("=========================================")
+    
+    -- 1024x1024 matrices (roughly 4MB each)
+    local size = 512 
+    print("Generating " .. size .. "x" .. size .. " matrices...")
+    local A = matrix.random(size, size)
+    local B = matrix.random(size, size)
+    
+    -- 1. CPU Benchmark
+    matrix.use("lua")
+    local t0 = os.clock()
+    local C_cpu = matrix.multiply(A, B)
+    local cpu_time = os.clock() - t0
+    print(string.format("  CPU (Pure LuaJIT) : %.4f sec", cpu_time))
+    
+    -- 2. GPU Benchmark (if available)
+    local gpu_time = "N/A"
+    if ai.LuaTL and ai.LuaTL.available then
+        matrix.use("luatl_adapter")
+        local t1 = os.clock()
+        local C_gpu = matrix.multiply(A, B)
+        gpu_time = os.clock() - t1
+        print(string.format("  GPU (luaTL)       : %.4f sec", gpu_time))
+        
+        -- Verify results match
+        if matrix.equals(C_cpu, C_gpu, 0.1) then
+            print("  Verification       : PASSED (CPU ~= GPU)")
+        else
+            print("  Verification       : MISMATCH (Check math)")
+        end
+        matrix.use("auto") -- reset to auto
+    else
+        print("  GPU (luaTL)       : Not installed/available")
+    end
+    
+    print("=========================================")
+end
+
 function ai.help()
     print([=[
 1. QUICKSTART (Text to AI in 5 lines)
