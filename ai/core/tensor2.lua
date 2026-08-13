@@ -382,6 +382,9 @@ function Tensor.softmax_rows(a, opts)
         { rows = rows, cols = cols, limits = limits })
 end
 
+-- Softmax gradient: d/dx_i softmax(x) = softmax(x) * (delta_ij - softmax(x))
+-- For numerical stability and efficiency, rearranged to: grad[i] = y[i] * (upstream_grad[i] - dot)
+-- where dot = sum(upstream_grad * y). This avoids computing the full Jacobian matrix.
 BACKWARD.softmax = function(nd)
     local g = nd._grad
     if not g then return end
@@ -442,6 +445,9 @@ function Tensor.rope(a, cos_rows, sin_rows, npairs)
         { cos = cos_rows, sin = sin_rows, npairs = npairs, rows = rows, cols = cols })
 end
 
+-- RoPE backward: Rotary position embedding applies 2D rotations to pairs of dimensions.
+-- The gradient is the inverse rotation: d/dx (R(theta) * x) = R(-theta) * d/d(output)
+-- This is computed as: [ag[p], ag[p+1]] = R(-theta) * [gd[p], gd[p+1]]
 BACKWARD.rope = function(nd)
     local g = nd._grad
     if not g then return end
@@ -627,6 +633,11 @@ function Tensor.rmsnorm(x, weight, eps)
         { inv = inv, rows = rows, cols = cols })
 end
 
+-- RMSNorm backward: d/dx RMSNorm(x, w) involves scaling through 1/sqrt(E[x^2] + eps)
+-- Using the chain rule and simplifying, we get:
+-- d(x)/dInput = (1/r) * d(output) * weight - (x/cols) * coef
+-- where coef = (1/r)^3 * dot(d(output) * weight, x)
+-- This form avoids computing the full Hessian and is numerically stable.
 BACKWARD.rmsnorm = function(nd)
     local g = nd._grad
     if not g then return end
@@ -845,6 +856,9 @@ function Tensor.cross_entropy(logits, target_ids, opts)
           count = counted, ignore = ignore })
 end
 
+-- Cross-entropy backward: d/d(logits) CrossEntropy = softmax(logits) - one_hot(target)
+-- This is the standard gradient formula from multi-class classification.
+-- We compute this efficiently by: grad[i,j] = softmax[i,j] - (1 if j==target[i] else 0)
 BACKWARD.cross_entropy = function(nd)
     local g = nd._grad
     if not g then return end
