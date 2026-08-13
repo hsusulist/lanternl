@@ -15,7 +15,31 @@ local function split_key(key)
     return t
 end
 
+-- Rebuild the integer vocabulary from the merge list. This is shared by
+-- train() and load(), since a loaded tokenizer does not run through training.
+local function rebuild_vocab(self)
+    self.vocab = {}
+    self.inv_vocab = {}
+
+    local function add_token(t)
+        if not self.vocab[t] then
+            self.vocab[t] = #self.inv_vocab + 1
+            table.insert(self.inv_vocab, t)
+        end
+    end
+
+    for _, t in ipairs(self.special_tokens or {}) do add_token(t) end
+    for i = 0, 255 do add_token(string.char(i)) end
+    add_token("</w>")
+    for _, m in ipairs(self.merges) do
+        add_token(m[1] .. m[2])
+    end
+
+    self.vocab_size = #self.inv_vocab
+end
+
 function tokenizer.new(config)
+    config = config or {}
     local self = setmetatable({}, tokenizer)
 
     self.text = config.text
@@ -37,9 +61,6 @@ end
 
 function tokenizer:train()
     self.merges = {}
-    self.vocab = {}
-    self.inv_vocab = {}
-
     local text = self.text
     if not text and self.text_file then
         local f = io.open(self.text_file, "r")
@@ -127,21 +148,7 @@ function tokenizer:train()
         end
     end
 
-    -- Build the final integer vocabulary
-    local function add_token(t)
-        if not self.vocab[t] then
-            self.vocab[t] = #self.inv_vocab + 1
-            table.insert(self.inv_vocab, t)
-        end
-    end
-
-    -- FIX 3: Cleaned up the indentation here so it's readable
-    for _, t in ipairs(self.special_tokens) do add_token(t) end
-    for i = 0, 255 do add_token(string.char(i)) end
-    add_token("</w>")
-    for _, m in ipairs(self.merges) do add_token(m[1] .. m[2]) end
-
-    self.vocab_size = #self.inv_vocab
+    rebuild_vocab(self)
     return self
 end
 
@@ -179,7 +186,8 @@ function tokenizer:decode(tokens)
     for _, id in ipairs(tokens) do
         local t = self.inv_vocab[id]
         if t then
-            table.insert(text, t:gsub("</w>", " "))
+            local cleaned = t:gsub("</w>", " ")
+            table.insert(text, cleaned)
         end
     end
     local result = table.concat(text)
@@ -196,11 +204,23 @@ function tokenizer:save(path)
 end
 
 function tokenizer:load(path)
-    self.merges = {}
-    for line in io.lines(path) do
-        local a, b = line:match("^(.-)\t(.+)$")
-        table.insert(self.merges, {a, b})
+    local f, err = io.open(path, "r")
+    if not f then
+        error("tokenizer: cannot open '" .. tostring(path) .. "': " .. tostring(err), 2)
     end
+
+    self.merges = {}
+    for line in f:lines() do
+        local a, b = line:match("^(.-)\t(.+)$")
+        if not a or not b then
+            f:close()
+            error("tokenizer: malformed merge line in '" .. tostring(path) .. "'", 2)
+        end
+        table.insert(self.merges, { a, b })
+    end
+    f:close()
+
+    rebuild_vocab(self)
     self:log("Loaded from " .. path)
     return self
 end
