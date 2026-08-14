@@ -264,7 +264,6 @@ return windows
 end
 
 local function check_config(self, who)
-    local function check_config(self, who)
         local function pos_int(key)
             local v = self[key]
             if not is_int(v) or v < 1 then
