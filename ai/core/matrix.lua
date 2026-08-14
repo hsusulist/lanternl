@@ -547,7 +547,7 @@ function matrix.multiply(a, b, out, acc)
     end
     local m, k, n = a.rows, a.cols, b.cols
     local result = target(out, m, n, "multiply")
-    if result == a or result == b then
+    if rawequal(result, a) or rawequal(result, b) then
         error("matrix.multiply: out must not alias a or b", 2)
     end
     if m == 0 or n == 0 then
