@@ -603,7 +603,7 @@ function matrix.matmul_nt(a, b, out, acc)
     end
     local m, k, n = a.rows, a.cols, b.rows
     local result = target(out, m, n, "matmul_nt")
-    if result == a or result == b then
+    if rawequal(result, a) or rawequal(result, b) then
         error("matrix.matmul_nt: out must not alias a or b", 2)
     end
     if m == 0 or n == 0 then return result end
@@ -633,7 +633,7 @@ function matrix.matmul_tn(a, b, out, acc)
     end
     local m, k, n = a.rows, a.cols, b.cols
     local result = target(out, k, n, "matmul_tn")
-    if result == a or result == b then
+    if rawequal(result, a) or rawequal(result, b) then
         error("matrix.matmul_tn: out must not alias a or b", 2)
     end
     local rd = result.data
