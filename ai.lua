@@ -3,6 +3,8 @@ package.path = package.path
     .. ";./ai/nn/?.lua"
     .. ";./ai/data/?.lua"
     .. ";./ai/optim/?.lua"
+    .. ";./ai/gpu/?.lua"
+    .. ";./tests/?.lua"
 
 local ai = {}
 
