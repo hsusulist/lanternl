@@ -20,7 +20,6 @@ function RoPE.new(config)
     if type(self.base) ~= "number" or self.base <= 1 then
         error("rope: 'base' must be a number > 1, got " .. tostring(self.base), 2)
     end
-.
     self.pairs = floor(self.head_dim / 2)
 
     self.inv_freq = {}
