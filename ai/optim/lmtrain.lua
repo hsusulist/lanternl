@@ -6,6 +6,10 @@ local matrix = require("matrix")
 local LMTrain = {}
 LMTrain.__index = LMTrain
 
+-- FIX: Force stdout to be unbuffered so progress bars stream in real-time
+-- in environments like Google Colab or piped terminals.
+io.stdout:setvbuf("no")
+
 local floor, ceil = math.floor, math.ceil
 local huge = math.huge
 local exp, sqrt, cos, pi = math.exp, math.sqrt, math.cos, math.pi
@@ -382,10 +386,10 @@ local function default_log(t)
         line = line .. sformat(" | val %.4f", t.val_loss)
     end
     if t.inplace_bar and t.epoch < (total or 0) then
-        io.write("\r", line)
+        io.write("\r", line, "   ")
         io.flush()
     else
-        io.write("\r", line, "\n")
+        io.write("\r", line, "   \n")
         io.flush()
     end
 end
