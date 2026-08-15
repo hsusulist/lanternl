@@ -2,16 +2,18 @@ local Tensor = require("tensor2")
 local Transformer = require("transformer")
 local optim2 = require("optim2")
 local matrix = require("matrix")
+local lmlog = require("lmlog")
+local ok_gpu_mod, lmtrain_gpu = pcall(require, "lmtrain_gpu")
+
 
 local LMTrain = {}
 LMTrain.__index = LMTrain
 
--- FIX: Detect if stdout is a real terminal.
--- Google Colab (and piped logs) don't support \r (in-place bar).
--- They buffer everything until they see a \n.
 local ffi = require("ffi")
-pcall(ffi.cdef, "int isatty(int fd);")
-local IS_TTY = ffi.C.isatty(1) == 1
+local IS_TTY = lmlog.is_tty
+local wall = lmlog.now
+io.stdout:setvbuf("no")
+
 
 -- Force unbuffered stdout for immediate streaming
 io.stdout:setvbuf("no")
@@ -34,7 +36,9 @@ verbose = true, causal = true, pos = "rope", rope_base = 10000,
 max_seq = 128, stride = nil, batch_size = 8, shuffle = true,
 val_split = 0, eval_every = 1, keep_best = true,
 clip_norm = 1.0, dropout = 0, tie = true,
+backend = "cpu", log_every_sec = 0.2, graph = false,
 }
+
 
 local NILABLE = {
 data = true, log = true, stop_loss = true, stop_when = true,
@@ -45,7 +49,7 @@ temperature = true, top_k = true, top_p = true,
 local ARCH_KEYS = {
 vocab = true, dim = true, layers = true, heads = true, ffn = true,
 causal = true, pos = true, rope_base = true, max_seq = true,
-tie = true, dropout = true,
+tie = true, dropout = true, backend = true, graph = true,   -- NEW
 }
 
 local OPT_KEYS = {
@@ -98,6 +102,11 @@ dropout = "dropout", drop = "dropout", tie = "tie",
 temperature = "temperature", temp = "temperature",
 top_k = "top_k", topk = "top_k", top_p = "top_p", topp = "top_p",
 preset = "preset",
+backend = "backend", device = "backend", engine = "backend",
+gpu = "backend", use_gpu = "backend",
+graph = "graph", cuda_graph = "graph",
+log_every_sec = "log_every_sec", log_interval = "log_every_sec",
+
 }
 
 local BAR_CHARS = {
@@ -166,30 +175,40 @@ return out
 end
 
 local function resolve_aliases(config, who)
-if type(config) ~= "table" then
-    error(sformat("%s: expected a config table, got %s", who, type(config)), 3)
-end
-local resolved, origin = {}, {}
-for key, val in pairs(config) do
-    if type(key) ~= "string" then
-        error(sformat("%s: config keys must be strings, got a %s key", who, type(key)), 3)
+    if type(config) ~= "table" then
+        error(sformat("%s: expected a config table, got %s", who, type(config)), 3)
     end
-    local canonical = ALIASES[key] or key
-    if RESERVED[canonical] then
-        error(sformat("%s: '%s' is a reserved name and cannot be used as a config key",
+    local resolved, origin = {}, {}
+    for key, val in pairs(config) do
+        if type(key) ~= "string" then
+            error(sformat("%s: config keys must be strings, got a %s key", who, type(key)), 3)
+        end
+        local canonical = ALIASES[key] or key
+        if RESERVED[canonical] then
+            error(sformat("%s: '%s' is a reserved name and cannot be used as a config key",
             who, key), 3)
-    end
-    local prev = origin[canonical]
-    if prev ~= nil and prev ~= key then
-        error(sformat("%s: conflicting config keys '%s' and '%s' both map to '%s', pick one",
+        end
+        local prev = origin[canonical]
+        if prev ~= nil and prev ~= key then
+            error(sformat("%s: conflicting config keys '%s' and '%s' both map to '%s', pick one",
             who, prev, key, canonical), 3)
+        end
+        resolved[canonical] = val
+        origin[canonical] = key
     end
-    resolved[canonical] = val
-    origin[canonical] = key
-end
-if resolved.sched == true then resolved.sched = "cosine" end
-if resolved.sched == false then resolved.sched = "none" end
-return resolved
+    if resolved.sched == true then resolved.sched = "cosine" end
+    if resolved.sched == false then resolved.sched = "none" end
+    if resolved.backend == true then resolved.backend = "gpu" end
+    if resolved.backend == false then resolved.backend = "cpu" end
+    if type(resolved.backend) == "string" then
+        resolved.backend = string.lower(resolved.backend)
+        if resolved.backend == "cuda" or resolved.backend == "luatl" then
+            resolved.backend = "gpu"
+        elseif resolved.backend == "lua" or resolved.backend == "tensor2" then
+            resolved.backend = "cpu"
+        end
+    end
+    return resolved
 end
 
 local function get_sequences(data, who)
@@ -362,7 +381,17 @@ local function check_config(self, who)
     elseif BAR_CHARS[style] == nil then 
         error(sformat("LMTrain%s: unknown bar style %s (expected 1, 2, 3 or { fill = , empty = })", who, tostring(style)), 3) 
     end 
+    local be = self.backend or "cpu"
+    if be ~= "cpu" and be ~= "gpu" then
+        error(sformat("LMTrain%s: 'backend' must be 'cpu' or 'gpu', got %s",
+            who, tostring(be)), 3)
+    end
+    if not is_finite(self.log_every_sec) or self.log_every_sec < 0 then
+        error(sformat("LMTrain%s: 'log_every_sec' must be a non-negative number, got %s",
+            who, tostring(self.log_every_sec)), 3)
+    end
 end
+
 
 local function fmt_time(s)
 if s < 60 then return sformat("%4.1fs", s) end
@@ -431,6 +460,18 @@ if self.seed ~= nil then
     math.randomseed(self.seed)
 end
 check_config(self, "")
+
+-- ---- GPU-resident backend (opt-in, strictly additive) ---------------
+if self.backend == "gpu" then
+    if not ok_gpu_mod then
+        error("LMTrain: backend = 'gpu' but lmtrain_gpu.lua failed to load: "
+              .. tostring(lmtrain_gpu), 2)
+    end
+    lmtrain_gpu.install(LMTrain)
+    return self:_build_gpu()          -- fails loudly if luaTL is missing
+end
+self.gpu_model = nil
+
 local ok, model = pcall(Transformer.new, {
     vocab = self.vocab, dim = self.dim, layers = self.layers,
     heads = self.heads, ffn = self.ffn, causal = self.causal,
@@ -620,7 +661,9 @@ return lr
 end
 
 function LMTrain:evaluate(windows)
+if self.gpu_model then return self:_evaluate_gpu(windows) end
 local model = self.model
+
 local prev_training = Tensor.training
 Tensor.training = false
 local total, count, correct = 0, 0, 0
@@ -677,6 +720,11 @@ if self.val_split > 0 and #all > 1 then
     for i = #all - nval + 1, #all do val_w[#val_w + 1] = all[i] end
 end
 
+-- ---- GPU-resident path ----------------------------------------------
+if self.gpu_model then
+    return self:_run_gpu(train_w, val_w, build_windows)
+end
+
 local model, opt, params = self.model, self.opt, self.params
 local nwin = #train_w
 local bs = self.batch_size
@@ -686,7 +734,15 @@ local total_steps = self.epochs * nbatch
 local order = {}
 for i = 1, nwin do order[i] = i end
 
-local started = os.clock()
+local started = wall()
+local reporter = lmlog.new{
+    total_steps = total_steps,
+    bar_style   = self.bar_style,
+    bar_len     = self.bar_len,
+    interval    = self.log_every_sec or 0.2,
+    inplace     = self.inplace_bar,
+}
+self._reporter = reporter
 local stalled = 0
 local gstep = 0
 self.stopped = nil
@@ -755,6 +811,16 @@ for epoch = 1, self.epochs do
 
         sum_loss = sum_loss + batch_loss
         sum_tok = sum_tok + batch_tokens
+        reporter:tick(batch_tokens)
+        if self.verbose then
+            reporter:update({
+                step = (epoch - 1) * nbatch + b, epoch = epoch,
+                epochs = self.epochs, batch = b, nbatch = nbatch,
+                loss = batch_tokens > 0 and (batch_loss / batch_tokens) or 0,
+                lr = self.cur_lr, gnorm = last_norm,
+            })
+        end
+
     end
 
     Tensor.training = false
@@ -762,8 +828,8 @@ for epoch = 1, self.epochs do
     self.loss = avg_loss
     self.accuracy = sum_tok > 0 and (100 * correct / sum_tok) or 0
     self.grad_norm = last_norm
-    self.elapsed = os.clock() - started
-    self.tokens_per_sec = self.elapsed > 0 and (sum_tok * epoch / self.elapsed) or 0
+    self.elapsed = wall() - started
+    self.tokens_per_sec = reporter.rate
 
     if #val_w > 0 and (epoch % self.eval_every == 0 or epoch == self.epochs) then
         self.val_loss, self.val_accuracy = self:evaluate(val_w)
@@ -805,7 +871,13 @@ for epoch = 1, self.epochs do
                 error(sformat("LMTrain: custom log function failed at epoch %d: %s", epoch, tostring(err)), 2)
             end
         else
-            default_log(self)
+            reporter:update({
+                step = epoch * nbatch, epoch = epoch, epochs = self.epochs,
+                batch = nbatch, nbatch = nbatch,
+                loss = avg_loss, acc = self.accuracy, lr = self.cur_lr,
+                gnorm = last_norm, val_loss = self.val_loss,
+                best = self.is_best,
+            }, true)
         end
     end
 
@@ -1055,7 +1127,9 @@ LMTrain._restore = restore
 
 local ok_io, lmio = pcall(require, "lmio")
 if ok_io and type(lmio) == "function" then lmio(LMTrain) end
+if ok_gpu_mod then lmtrain_gpu.install(LMTrain) end
 
 setmetatable(LMTrain, { __call = function(_, ...) return LMTrain.new(...) end })
+
 
 return LMTrain

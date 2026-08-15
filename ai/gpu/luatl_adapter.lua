@@ -9,10 +9,10 @@
 --
 --  NEW (opt-in, nothing breaks if unused):
 --    * The same functions accept GPU HANDLES instead of flat tables.
---      If every input is a handle, the output is a handle and the host
---      is never touched.  Migrate matrix.lua one call site at a time.
 --    * M.pin(flat, rows, cols)  -> upload a weight ONCE, forever.
---    * M.transposed-GEMM helpers for the backward pass.
+--    * Transposed-GEMM helpers for the backward pass.
+--    * A resident tensor toolkit (stride views, offset pointers, int32
+--      index buffers, scalar readback) used by gpu_transformer.lua.
 -- =====================================================================
 
 local M = { name = "luatl", priority = 100, available = false }
@@ -30,9 +30,11 @@ if not okinit then M.error = tostring(initerr) return M end
 M.available = true
 M.device    = luaTL.device
 M.luaTL     = luaTL
+M.C         = luaTL.C
 
 local F32     = luaTL.F32
 local f32_ct  = ffi.typeof("float[?]")
+local i32_ct  = ffi.typeof("int32_t[?]")
 
 -- ---------------------------------------------------------------------
 --  Cached host staging buffers (stops per-call cdata churn)
@@ -76,6 +78,7 @@ local function new_handle(t, rows, cols)
     return setmetatable({ t = t, rows = rows, cols = cols,
                           __luatl_handle = true }, Handle)
 end
+M.new_handle = new_handle
 
 --- Upload a flat Lua array once and keep it resident.
 function M.pin(flat, rows, cols)
@@ -147,8 +150,6 @@ end
 --  LEGACY-COMPATIBLE ENTRY POINTS  (signatures unchanged)
 -- =====================================================================
 
---- C = A(m x k) @ B(k x n).  Flat 1-indexed in, flat 1-indexed out.
---- If BOTH a and b are handles, returns a handle and never touches host.
 function M.matmul(a, m, k, b, n)
     local A, ah = as_tensor(a, m, k, "A")
     local B, bh = as_tensor(b, k, n, "B")
@@ -178,32 +179,17 @@ end
 function M.softmax_causal(x, rows, cols, scale, group)
     local X, xh = as_tensor(x, rows, cols, "A")
     local O = xh and luaTL.new(rows, cols, F32) or dev_scratch("C", rows, cols)
-    X:softmax_ex(O, { causal = true, scale = scale or 1.0,
-                      group = group or 0 })
+    X:softmax_ex(O, { causal = true, scale = scale or 1.0, group = group or 0 })
     return emit(O, rows, cols, xh)
 end
 
 -- =====================================================================
---  NEW: resident-mode primitives for a migrated matrix.lua / tensor2.lua
+--  Resident-mode primitives for a migrated matrix.lua / tensor2.lua
 -- =====================================================================
 
---- C(m x n) = A(m x k) @ B(k x n), all handles, result written in place.
-function M.gemm(hA, hB, hC, opts)
-    luaTL.gemm_ex(hA.t, hB.t, hC.t, opts)
-    return hC
-end
-
---- dX(m x k) = dY(m x n) @ W(k x n)^T   — no transpose buffer, no copy.
-function M.gemm_dx(hdY, hW, hdX, beta)
-    luaTL.matmul_dx(hdY.t, hW.t, hdX.t, beta)
-    return hdX
-end
-
---- dW(k x n) += X(m x k)^T @ dY(m x n)  — accumulating by default.
-function M.gemm_dw(hX, hdY, hdW, beta)
-    luaTL.matmul_dw(hX.t, hdY.t, hdW.t, beta)
-    return hdW
-end
+function M.gemm(hA, hB, hC, opts) luaTL.gemm_ex(hA.t, hB.t, hC.t, opts) return hC end
+function M.gemm_dx(hdY, hW, hdX, beta) luaTL.matmul_dx(hdY.t, hW.t, hdX.t, beta) return hdX end
+function M.gemm_dw(hX, hdY, hdW, beta) luaTL.matmul_dw(hX.t, hdY.t, hdW.t, beta) return hdW end
 
 function M.add_inplace(hDst, hSrc, alpha) hDst.t:add_inplace(hSrc.t, alpha) return hDst end
 function M.silu_inplace(h) h.t:silu_inplace() return h end
@@ -218,15 +204,75 @@ function M.rmsnorm_bwd(hx, hg, hdy, hdx, hdg, eps)
     return hdx
 end
 
-function M.softmax_bwd(hy, hdy, hdx, o)
-    hy.t:softmax_bwd(hdy.t, hdx.t, o)
-    return hdx
-end
+function M.softmax_bwd(hy, hdy, hdx, o) hy.t:softmax_bwd(hdy.t, hdx.t, o) return hdx end
 
 function M.program(cap, timing) return luaTL.Program(cap, timing) end
 function M.sync() luaTL.sync() end
 function M.stats() return luaTL.pool_stats() end
 function M.hardware() return luaTL.hardware() end
 function M.shutdown() luaTL.finalize() end
+
+-- =====================================================================
+--  RESIDENT TENSOR TOOLKIT  (new; used by gpu_transformer.lua)
+--
+--  Nothing above this line changed.  These are thin, allocation-free
+--  helpers for code that keeps EVERYTHING in VRAM for the lifetime of a
+--  model rather than for the duration of one call.
+-- =====================================================================
+
+--- Element-offset pointer into a tensor's f32 storage.
+function M.offset(t, elems)
+    return ffi.cast("char*", t.data) + elems * 4
+end
+
+--- Explicit stride view for gemm_ex / Program:gemm.
+--- rs = row stride, cs = col stride, bs = batch stride (all in elements).
+function M.view(ptr, rows, cols, rs, cs, bs)
+    return { data = ptr, rows = rows, cols = cols,
+             rs = rs, cs = cs, bs = bs or 0, dtype = F32 }
+end
+
+--- Column-slice view of a handle/tensor, keeping the parent leading dim.
+function M.cols(t, col0, w)
+    if is_handle(t) then t = t.t end
+    return M.view(M.offset(t, col0), t.rows, w, t.cols, 1, 0)
+end
+
+--- Non-owning tensor over a raw pointer (so Program ops can take it).
+function M.wrap(ptr, rows, cols) return luaTL.wrap(ptr, rows, cols, F32) end
+
+--- int32 index buffer backed by f32-sized storage (4 bytes either way).
+function M.ids(n)
+    local h = M.alloc(n, 1)
+    h.is_ids = true
+    return h
+end
+
+function M.upload_i32(t, cbuf, n)
+    if is_handle(t) then t = t.t end
+    luaTL.check(luaTL.C.luaTL_upload_i32(t.data, cbuf, n), "adapter.upload_i32")
+end
+
+function M.download_i32(t, cbuf, n)
+    if is_handle(t) then t = t.t end
+    luaTL.check(luaTL.C.luaTL_download_i32(t.data, cbuf, n), "adapter.download_i32")
+end
+
+function M.download_f32(ptr, cbuf, n)
+    luaTL.check(luaTL.C.luaTL_download_f32(ptr, cbuf, n), "adapter.download_f32")
+end
+
+--- Read one float out of a device tensor (used for the loss / grad norm).
+local one = ffi.new("float[1]")
+function M.scalar(t)
+    if is_handle(t) then t = t.t end
+    luaTL.check(luaTL.C.luaTL_download_f32(t.data, one, 1), "adapter.scalar")
+    return one[0]
+end
+
+function M.mem()
+    local f, t = luaTL.mem_info()
+    return f, t
+end
 
 return M
