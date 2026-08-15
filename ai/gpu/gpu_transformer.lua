@@ -754,16 +754,25 @@ function Model:maybe_capture()
     end
 end
 
+--- GPU-to-GPU snapshot (no CPU memory used!)
 function Model:snapshot()
-    local s = {}
-    for i = 1, #self.params do s[i] = self.params[i].w:toflat() end
-    return s
+    local snap = {}
+    for i = 1, #self.params do
+        local p = self.params[i]
+        local h = adapter.alloc(p.rows, p.cols)
+        -- Device-to-device copy
+        luaTL.check(C.luaTL_gpu_copy(p.w.t.data, h.t.data, p.nelem), "snapshot copy")
+        snap[i] = h
+    end
+    return snap
 end
 
 function Model:restore(snap)
     if not snap then return false end
     for i = 1, #self.params do
-        if snap[i] then self.params[i].w:upload(snap[i]) end
+        if snap[i] then
+            luaTL.check(C.luaTL_gpu_copy(snap[i].t.data, self.params[i].w.t.data, self.params[i].nelem), "restore copy")
+        end
     end
     return true
 end

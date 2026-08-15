@@ -282,8 +282,8 @@ function G.install(LMTrain)
                 self.best_loss = monitor
                 stalled = 0
                 if self.keep_best then
-                    self:_gpu_pull()
-                    self.best_snapshot = LMTrain._snapshot(self.params)
+                    -- FIX: Use GPU-to-GPU snapshot to avoid CPU RAM OOM!
+                    self.best_snapshot = m:snapshot()
                 end
             else
                 if monitor < self.best_loss then self.best_loss = monitor end
@@ -342,11 +342,8 @@ function G.install(LMTrain)
         rep:finish()
 
         if self.keep_best and self.best_snapshot and self.stopped ~= "epochs" then
-            if LMTrain._restore(self.params, self.best_snapshot) then
-                self:_gpu_push()
-                if self.verbose then
-                    print(sformat("Restored best weights (loss %.5f)", self.best_loss))
-                end
+            if m:restore(self.best_snapshot) and self.verbose then
+                print(sformat("Restored best weights (loss %.5f)", self.best_loss))
             end
         end
 
