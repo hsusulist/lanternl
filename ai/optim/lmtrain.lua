@@ -915,6 +915,7 @@ for epoch = 1, self.epochs do
         end
         break
     end
+    collectgarbage("collect")
 end
 
 if self.stopped == nil then self.stopped = "epochs" end

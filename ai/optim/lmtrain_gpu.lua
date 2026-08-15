@@ -335,6 +335,7 @@ function G.install(LMTrain)
                     epoch, stalled, self.best_loss))
                 break
             end
+            collectgarbage("collect")
         end
 
         if self.stopped == nil then self.stopped = "epochs" end
