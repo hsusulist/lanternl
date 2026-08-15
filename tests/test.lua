@@ -2,7 +2,7 @@
 --  test.lua — correctness + performance harness for luaTL 2.1
 --    luajit test.lua
 -- =====================================================================
-package.path = package.path .. ";./ai/gpu/?.lua;./?.lua;;"
+package.path = package.path .. ";./ai/gpu/?.lua;./cuda/?.lua;;"
 local luaTL = require("luaTL")
 require("luaTL_train")
 
