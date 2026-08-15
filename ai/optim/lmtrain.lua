@@ -6,9 +6,16 @@ local matrix = require("matrix")
 local LMTrain = {}
 LMTrain.__index = LMTrain
 
--- FIX: Force stdout to be unbuffered so progress bars stream in real-time
--- in environments like Google Colab or piped terminals.
+-- FIX: Detect if stdout is a real terminal.
+-- Google Colab (and piped logs) don't support \r (in-place bar).
+-- They buffer everything until they see a \n.
+local ffi = require("ffi")
+pcall(ffi.cdef, "int isatty(int fd);")
+local IS_TTY = ffi.C.isatty(1) == 1
+
+-- Force unbuffered stdout for immediate streaming
 io.stdout:setvbuf("no")
+
 
 local floor, ceil = math.floor, math.ceil
 local huge = math.huge
@@ -389,7 +396,7 @@ local function default_log(t)
         io.write("\r", line, "   ")
         io.flush()
     else
-        io.write("\r", line, "   \n")
+        io.write(line, "\n")
         io.flush()
     end
 end
@@ -475,7 +482,7 @@ self.is_best = false
 self.stopped = nil
 self.elapsed = 0
 self.tokens_per_sec = 0
-self.inplace_bar = true
+self.inplace_bar = IS_TTY
 
 local preset = config.preset
 config.preset = nil
