@@ -1,12 +1,5 @@
--- =====================================================================
---  luaTL_train.lua — training extension for luaTL.lua
---
---  Plugs into: luaTL.lua (require'd, not replaced).  It adds methods to
---  luaTL.TensorClass in place, so every tensor created by luaTL.new()
---  gains the new capability automatically.  Nothing in luaTL.lua changes.
---
+--     -- training extension for luaTL.lua --
 --  Requires the library built from luaTL_train.cu.
--- =====================================================================
 
 local ffi   = require("ffi")
 local luaTL = require("luaTL")
@@ -114,11 +107,9 @@ luaTL.train_version = ffi.string(C.luaTL_train_version())
 
 function luaTL.finalize() C.luaTL_finalize() end
 
--- =====================================================================
 --  Strided views: describe transposes / head slices WITHOUT copying.
 --  A "stride view" is a plain Lua table, not a tensor -- it just carries
 --  a pointer plus the six strides that gemm_ex needs.
--- =====================================================================
 local function sv(ptr, rows, cols, rs, cs, dtype, bs)
     return { data = ptr, rows = rows, cols = cols,
              rs = rs, cs = cs, bs = bs or 0, dtype = dtype or F32 }
@@ -157,11 +148,9 @@ local function coerce(x)
 end
 luaTL.coerce = coerce
 
--- =====================================================================
 --  Immediate-mode strided GEMM
 --    Cc = act(alpha * (pre(A) @ B) + bias) + beta*Cc
 --  A, B, Cc may each be a Tensor or a stride view.
--- =====================================================================
 function luaTL.gemm_ex(A, B, Cc, o)
     o = o or {}
     local a, b, c = coerce(A), coerce(B), coerce(Cc)
@@ -192,9 +181,7 @@ function luaTL.matmul_dw(X, dY, dW, beta)
     return luaTL.gemm_ex(X:t(), dY, dW, { beta = beta == nil and 1.0 or beta })
 end
 
--- =====================================================================
 --  Immediate-mode wrappers for the new kernels
--- =====================================================================
 function T:rmsnorm_bwd(gamma, dy, dx, dgamma, eps)
     ck(C.luaTL_rmsnorm_bwd(self.data, gamma and gamma.data or nil, dy.data,
         dx.data, dgamma and ffi.cast("float*", dgamma.data) or nil,
@@ -337,9 +324,7 @@ function luaTL.scalar_value(t)
     return buf[0]
 end
 
--- =====================================================================
 --  Program : the wide command buffer + CUDA Graph replay
--- =====================================================================
 local Prog = {}
 Prog.__index = Prog
 luaTL.ProgramClass = Prog

@@ -61,25 +61,21 @@ function ai.profile()
     end
 
     local p = luaTL.get_profile()
-    print("=========================================")
     print("  luaTL GPU Profiler")
-    print("=========================================")
     print(string.format("  VRAM Allocations : %d", p.allocs))
     print(string.format("  Host -> Device   : %.4f sec", p.h2d))
     print(string.format("  Device -> Host   : %.4f sec", p.d2h))
     print(string.format("  Compute Kernels  : %.4f sec", p.compute))
     print("=========================================")
     if p.h2d > (p.compute * 2) then
-        print("  ⚠️ Warning: Data transfer is bottlenecking compute.")
+        print("     Warning: Data transfer is bottlenecking compute.")
         print("     Consider using larger batch sizes.")
     end
 end
 
 function ai.benchmark()
     local matrix = ai.Matrix
-    print("=========================================")
     print("  LanternL CPU/GPU Benchmark")
-    print("=========================================")
     
     -- 1024x1024 matrices (roughly 4MB each)
     local size = 512 
@@ -113,14 +109,11 @@ function ai.benchmark()
     else
         print("  GPU (luaTL)       : Not installed/available")
     end
-    
-    print("=========================================")
 end
 
 function ai.help()
     print([=[
 1. QUICKSTART (Text to AI in 5 lines)
---------------------------------------------------------------------
 local ai = require("ai")
 
 local model = ai.LMTrain {
@@ -134,7 +127,6 @@ print(model:generate("hello", 10)) -- Generate text!
 
 
 2. GPU-RESIDENT TRAINING (Massive Speedup)
---------------------------------------------------------------------
 -- If you have compiled luaTL.so, add backend = "gpu"!
 local model = ai.LMTrain {
     data = "your long text here",
@@ -148,7 +140,6 @@ model:run()
 
 
 3. TRAINING WITH A TOKENIZER (For larger texts)
---------------------------------------------------------------------
 -- Train a BPE Tokenizer on your text
 local tok = ai.Tokenizer.new { text = "your long text here", vocab_size = 500 }
 tok:train()
@@ -164,7 +155,6 @@ print(trainer:generate("your", 20))
 
 
 4. DOWNLOADING DATASETS (HuggingFace)
---------------------------------------------------------------------
 -- Auto-discovers files, parses Parquet/CSV/TXT, limits to 500MB
 local dataset = ai.Data("your_username/your_dataset", "500MB")
 
@@ -176,7 +166,6 @@ local batches = dataset:batches()
 
 
 5. ADVANCED TRAINING & EARLY STOPPING
---------------------------------------------------------------------
 local trainer = ai.LMTrain {
     data = "your data here",
     epochs = 1000,
@@ -199,7 +188,6 @@ trainer:run()
 
 
 6. SAVE, LOAD, AND PUSH TO HUGGINGFACE
---------------------------------------------------------------------
 trainer:save("my_lua_model.txt")
 trainer:load("my_lua_model.txt")
 
@@ -208,7 +196,6 @@ trainer:push("your_username/your_model_repo")
 
 
 7. CHECK GPU / HARDWARE STATUS
---------------------------------------------------------------------
 for _, b in ipairs(ai.Matrix.backends()) do
     print(string.format("Backend: %-15s | Available: %-5s | Reason: %s", 
           b.name, tostring(b.available), b.reason))
@@ -216,7 +203,6 @@ end
 
 
 8. CORE MODULES (ai.X)
---------------------------------------------------------------------
   ai.LMTrain        : High-level Trainer & Generator
   ai.Data           : Dataset downloader & batcher
   ai.Tokenizer      : BPE Tokenizer (train, encode, decode)
@@ -226,7 +212,6 @@ end
   ai.Optim2         : Optimizers (SGD, AdamW)
 
 Type `ai.h()` to see this menu anytime!
-====================================================================
 ]=])
 end
 

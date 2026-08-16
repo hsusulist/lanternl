@@ -1,7 +1,5 @@
--- =====================================================================
---  test.lua — correctness + performance harness for luaTL 2.1
---    luajit test.lua
--- =====================================================================
+-- use "luajit test.lua" to run
+-- remember to cd in this folder to run it or write a package path
 package.path = package.path .. ";./ai/gpu/?.lua;./cuda/?.lua;;"
 local luaTL = require("luaTL")
 require("luaTL_train")
@@ -39,7 +37,6 @@ print(string.format("sm %s, %d SMs, %.0f GB/s, tensor cores: %s",
 
 math.randomseed(1234)
 
--- ---------------------------------------------------------------------
 print("\n[1] plain GEMM vs CPU reference")
 do
     local M, K, N = 37, 53, 41
@@ -88,7 +85,6 @@ do
     A:free() B:free() Cc:free() A2:free() B2:free() C2:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[2] transposed GEMM (the backward-pass primitive)")
 do
     local M, K, N = 24, 32, 20
@@ -129,7 +125,6 @@ do
     dW:free() dWr:free() Xt:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[3] batched multi-head GEMM (QK^T with zero reshapes)")
 do
     local T, H, hd = 8, 3, 4
@@ -164,7 +159,6 @@ do
     Q:free() Kk:free() S:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[4] group-aware causal softmax (the multi-head mask fix)")
 do
     local T, H = 6, 2
@@ -212,7 +206,6 @@ do
     S:free() O:free() dY:free() dX:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[5] RMSNorm backward vs finite differences")
 do
     local rows, cols, eps = 3, 8, 1e-5
@@ -249,7 +242,6 @@ do
     X:free() G:free() dY:free() dX:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[6] SwiGLU forward/backward")
 do
     local rows, cols = 5, 7
@@ -282,7 +274,6 @@ do
     A:free() B:free() O:free() dO:free() dA:free() dB:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[7] RoPE forward then inverse == identity")
 do
     local T, H, hd = 7, 2, 8
@@ -297,7 +288,6 @@ do
     X:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[8] embedding gather + scatter-add backward")
 do
     local V, D, T = 10, 4, 5
@@ -329,7 +319,6 @@ do
     tbl:free() ids:free() out:free() dout:free() dtbl:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[9] fused cross-entropy (loss + dlogits on device)")
 do
     local T, V = 4, 9
@@ -367,7 +356,6 @@ do
     logits:free() tgt:free() losses:free() dlog:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[10] reductions: column sum, L2 norm, on-device clip, argmax")
 do
     local X = luaTL.from_table({1,2,3, 4,5,6}, {2,3})
@@ -392,7 +380,6 @@ do
     X:free() cs:free() Y:free() acc:free() Z:free() am:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[11] Program buffer: whole step in ONE FFI call")
 do
     local M, K, N = 64, 64, 64
@@ -415,7 +402,6 @@ do
     A:free() W:free() H1:free() H2:free() ref:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[12] CUDA Graph capture + replay")
 do
     local M, K, N = 128, 128, 128
@@ -447,7 +433,6 @@ do
     A:free() W:free() O:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[13] adapter: legacy flat API + resident handles")
 do
     local ad = require("luatl_adapter")
@@ -489,7 +474,6 @@ do
     end
 end
 
--- ---------------------------------------------------------------------
 print("\n[14] performance: resident vs round-tripped matmul")
 do
     local ad = require("luatl_adapter")
@@ -524,7 +508,6 @@ do
     end
 end
 
--- ---------------------------------------------------------------------
 print("\n[15] mini end-to-end training step (loss must go down)")
 do
     local T, D, V = 32, 64, 48
@@ -590,7 +573,6 @@ do
     dh:free() dx:free() losses:free() d_emb:free() d_out:free()
 end
 
--- ---------------------------------------------------------------------
 print("\n[16] pool health")
 do
     local s = luaTL.pool_stats()

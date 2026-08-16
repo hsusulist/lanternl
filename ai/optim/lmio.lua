@@ -184,7 +184,7 @@ return function(LMTrain)
         local file = opts.file or "lanternl_model.txt"
         self:save(file, opts)
 
-        -- Users must run `hf auth login` or `huggingface-cli login` once in their terminal.
+        -- Users must run "hf auth login" or "huggingface-cli login" once in their terminal.
         local cmds = {
             sformat('hf upload %s %s %s', repo_id, file, file),
             sformat('huggingface-cli upload %s %s %s', repo_id, file, file),

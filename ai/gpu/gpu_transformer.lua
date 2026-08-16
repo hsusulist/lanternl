@@ -1,6 +1,3 @@
--- =====================================================================
---  gpu_transformer.lua — fully GPU-resident Transformer training step
---
 --  One training step  =  token ids in  ->  loss out  ->  weights updated
 --  in place on the GPU.  The host boundary is crossed exactly twice:
 --
@@ -14,7 +11,6 @@
 --  with a handful of FFI transitions (or ONE, with CUDA graph replay).
 --
 --  Layout
---  ------
 --    N  = B * T          rows; sequence b occupies rows b*T .. b*T+T-1
 --    D  = dim, H = heads, hd = D/H, F = ffn hidden, V = vocab
 --    qkv[l]    : [N, 3D]        Q = cols 0..D-1, K = D..2D-1, V = 2D..3D-1
@@ -23,14 +19,12 @@
 --                               sequences cannot see each other.
 --
 --  Padding contract
---  ----------------
 --    Shapes are STATIC.  A short window or a short final batch is padded
 --    with id 0 and target -1.  luaTL_ce_kernel writes loss 0 AND
 --    dlogits 0 for those rows, so their contribution to every gradient is
 --    exactly zero.  grad_scale and the loss-sum scale are patched in the
 --    command structs to 1/valid_tokens, so the reported loss and the
 --    gradient magnitude are exact, not approximate.
--- =====================================================================
 
 local ffi = require("ffi")
 
@@ -47,10 +41,8 @@ local sqrt, log, cos, sin, pi = math.sqrt, math.log, math.cos, math.sin, math.pi
 local floor, min, max, huge = math.floor, math.min, math.max, math.huge
 local sformat = string.format
 
--- ---------------------------------------------------------------------
 --  Bindings (resolved lazily so that requiring this file on a CPU-only
 --  box does not explode; construction is what fails loudly).
--- ---------------------------------------------------------------------
 local luaTL, C, F32
 
 local function bind()
@@ -71,9 +63,7 @@ end
 GT.available = adapter.available
 GT.adapter   = adapter
 
--- ---------------------------------------------------------------------
 --  Small helpers
--- ---------------------------------------------------------------------
 
 --- Byte-offset pointer into a tensor's storage, in ELEMENTS (f32).
 local function poff(t, elems)
@@ -107,9 +97,7 @@ local function normal_fill(t, std)
     t:upload(buf, n)
 end
 
--- =====================================================================
 --  Construction
--- =====================================================================
 
 local function need(cfg, key)
     local v = cfg[key]
@@ -186,11 +174,9 @@ function GT.new(cfg)
     return self
 end
 
--- ---------------------------------------------------------------------
 --  Allocation.  Every tensor below lives for the lifetime of the model.
 --  Handles (adapter.alloc / adapter.pin) own the storage and anchor it
 --  against the GC; `self._keep` anchors the non-owning wrap views.
--- ---------------------------------------------------------------------
 function Model:_alloc()
     local B, T, D, H, hd = self.B, self.T, self.dim, self.heads, self.hd
     local F, V, L, N     = self.ffn, self.vocab, self.layers, self.N
@@ -228,7 +214,7 @@ function Model:_alloc()
         return p
     end
 
-    -- ---- parameters -------------------------------------------------
+    -- ---- parameters ----
     -- GPT-2 style init: 0.02 everywhere, residual-output projections
     -- scaled by 1/sqrt(2L) so the residual stream does not blow up with
     -- depth.  No weight decay on 1-D norm gains.
@@ -252,7 +238,7 @@ function Model:_alloc()
         self.wout = param("head", D, V, std, true)
     end
 
-    -- ---- index buffers ----------------------------------------------
+    -- ---- index buffers ----
     self.ids = A(N, 1)     -- int32 storage in an f32-sized tensor
     self.tgt = A(N, 1)
     self.pos = A(N, 1)
@@ -264,7 +250,7 @@ function Model:_alloc()
     for r = 0, N - 1 do self.h_pos[r] = r % T end
     luaTL.check(C.luaTL_upload_i32(self.pos.data, self.h_pos, N), "pos.upload")
 
-    -- ---- residual stream + per-layer saved activations ---------------
+    -- ---- residual stream + per-layer saved activations ---
     self.res  = { [0] = A(N, D) }      -- res[l]  : output of layer l
     self.mid  = {}                     -- mid[l]  : after attention residual
     self.h1, self.qkv, self.sc, self.attn = {}, {}, {}, {}
@@ -296,7 +282,7 @@ function Model:_alloc()
     self.lossacc= A(1, 1)
     self.nsq    = A(1, 1)
 
-    -- ---- backward scratch (reused across layers) ---------------------
+    -- ---- backward scratch (reused across layers) ----
     self.dres   = A(N, D)
     self.dbr    = A(N, D)
     self.dhf    = A(N, D)
@@ -315,9 +301,7 @@ function Model:_alloc()
     self.f1 = ffi.new("float[1]")
 end
 
--- =====================================================================
 --  Program construction
--- =====================================================================
 
 --- Forward pass.  `grad` selects whether cross-entropy also writes
 --- dlogits (in place over the logits) or leaves the logits intact so
@@ -415,7 +399,7 @@ function Model:_queue_backward(p)
     local HTT            = H * TT
     local dl             = self.logits          -- dlogits, written in place
 
-    -- ---- output head -------------------------------------------------
+    -- ---- output head ----
     if self.tie then
         -- d(tok_emb) += dlogits^T @ hf     ([V,N] @ [N,D] -> [V,D])
         p:gemm(dl:t(), self.hf, self.emb.g.t, { beta = 1.0 })
@@ -428,7 +412,7 @@ function Model:_queue_backward(p)
     p:rmsnorm_bwd(self.res[L], self.lnf.w.t, self.dhf, self.dres,
                   self.lnf.g.t, eps)
 
-    -- ---- layers, top down --------------------------------------------
+    -- ---- layers, top down ----
     for l = L, 1, -1 do
         local ly  = self.lyr[l]
         local xin = self.res[l - 1]
@@ -558,9 +542,7 @@ function Model:_build_programs()
     self._cap_scale  = nil
 end
 
--- =====================================================================
 --  Per-step scalar patching (grad_scale / loss scale / lr / adam step)
--- =====================================================================
 function Model:_set_valid(valid)
     if valid < 1 then valid = 1 end
     if self._valid == valid then return end
@@ -578,9 +560,7 @@ function Model:_set_hparams(lr, step)
     end
 end
 
--- =====================================================================
 --  Host <-> device: the ONLY two places that touch the CPU
--- =====================================================================
 
 --- Pack up to B windows into the static [B, T] id/target block.
 --- Returns the number of valid (non-padding) target positions.
@@ -650,9 +630,7 @@ function Model:_count_correct()
     return c
 end
 
--- =====================================================================
 --  Public API
--- =====================================================================
 
 --- One optimizer step over up to B windows.
 --- Returns loss (mean over valid tokens), correct, tokens, grad_norm.

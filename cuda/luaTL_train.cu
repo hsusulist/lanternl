@@ -1,12 +1,9 @@
-/* =====================================================================
- *  luaTL_train.cu — luaTL training extension layer  (v2.1)
- *
- *  This file is a SUPERSET of luaTL_core.cu.  It textually includes
+/*  This file is a SUPERSET of luaTL_core.cu.  It textually includes
  *  luaTL_core.cu so that it shares the same translation unit (and thus
  *  sees TAcc<T>, the memory pool, the error plumbing, the launchers and
  *  the autotuner) without requiring ANY edit to that file.
  *
- *  >>> BUILD THIS FILE INSTEAD OF luaTL_core.cu. <<<
+ *  BUILD THIS FILE INSTEAD OF luaTL_core.cu. 
  *  The resulting library exports every old symbol plus the new ones.
  *
  *  Linux:
@@ -20,22 +17,7 @@
  *
  *  Windows:
  *    nvcc -O3 -std=c++14 --shared -gencode arch=compute_86,code=sm_86 ^
- *         --use_fast_math luaTL_train.cu -o luaTL.dll
- *
- *  What this adds
- *  --------------
- *   1. luaTL_gemm_ex  : fully strided + batched + transposable GEMM with
- *                       the same fused pre/post epilogues.  One kernel
- *                       covers forward, dX, dW, multi-head QK^T and PV.
- *   2. A register-tiled 64x64x16 GEMM (4x4 per thread) for big shapes.
- *   3. Backward kernels: rmsnorm_bwd, softmax_bwd, swiglu_bwd, rope
- *                        (inverse), embed_bwd, fused cross-entropy.
- *   4. Reductions: column sum, scalar sum, global L2 + on-device clip,
- *                  row argmax, row gather.
- *   5. luaTL_prog_* : a wider command buffer than luaTL_pipeline_t, able
- *                     to express a whole fwd+bwd+AdamW step, plus CUDA
- *                     Graph capture/replay for near-zero launch overhead.
- * ================================================================== */
+ *         --use_fast_math luaTL_train.cu -o luaTL.dll*/
 
 #include <stdarg.h>          /* luaTL_core.cu uses va_list without this */
 #include "luaTL_core.cu"
@@ -44,14 +26,11 @@
 
 #define LUATL_TRAIN_VERSION_STRING "luaTL-train 2.1.0"
 
-/* =====================================================================
- *  SECTION T0 :: shutdown-safety epoch
- *
+/*  shutdown-safety epoch
  *  luaTL_shutdown() frees every pool block and the pool struct itself,
  *  but live Lua tensors still hold t->pool.  Their __gc then runs on
  *  freed host memory.  We bump an epoch on shutdown and make the new
- *  release path a no-op afterwards.
- * ================================================================== */
+ *  release path a no-op afterwards.*/
 static uint64_t g_epoch = 1;
 
 extern "C" {
@@ -73,9 +52,7 @@ LUATL_API void luaTL_tensor_release_safe(luaTL_tensor_t* t)
 }
 } /* extern "C" */
 
-/* =====================================================================
- *  SECTION T1 :: New public enums / structs
- * ================================================================== */
+/*New public enums / structs*/
 
 enum luaTL_pop_e {
     LTL_P_NOP          = 0,
@@ -132,10 +109,7 @@ typedef struct {
     int32_t     owns_stream, timing, captured, capturing;
 } luaTL_prog_t;
 
-/* =====================================================================
- *  SECTION T2 :: Generalised strided GEMM
- *
- *   C[b][m][n] = post( alpha * sum_k pre(A)[b][m][k] * B[b][k][n]
+/*C[b][m][n] = post( alpha * sum_k pre(A)[b][m][k] * B[b][k][n]
  *                      + bias[n] ) + beta * C[b][m][n]
  *
  *  Addressing is fully explicit:
@@ -146,11 +120,7 @@ typedef struct {
  *  Therefore:
  *     row-major [M,K], ld=K       -> a_rs=ld, a_cs=1
  *     TRANSPOSED (stored [K,M])   -> a_rs=1,  a_cs=ld
- *     head h of a [T, H*hd] tensor-> a_rs=H*hd, a_cs=1, a_bs=hd
- *
- *  NOTE (inherited semantics): when post_op != NONE the activation is
- *  applied BEFORE the beta*C accumulate.  Always use act=NONE with beta!=0.
- * ================================================================== */
+ *     head h of a [T, H*hd] tensor-> a_rs=H*hd, a_cs=1, a_bs=hd*/
 
 /* ---- shared-memory tiled variant (small / odd shapes, inline RMS) --- */
 template <typename T, int TM, int TN, int TK>
@@ -416,7 +386,7 @@ static float* luaTL_rowscale_scratch(int rows)
     return g_rowscale;
 }
 
-/* ---- host launcher -------------------------------------------------- */
+/* ---- host launcher ---- */
 template <typename T>
 static int luaTL_gemm_ex_launch(
         const void* A_, const void* B_, void* C_,
@@ -451,7 +421,7 @@ static int luaTL_gemm_ex_launch(
         return luaTL_launch_async("gemm_ex(wmma)");
     }
 
-    /* --- register-tiled path for the fat training GEMMs --------------- */
+    /* --- register-tiled path for the fat training GEMMs --- */
     const int big = (M >= 64 && N >= 64 && K >= 8) && (g_tile_override < 0);
     if (big) {
         const float* rsc = rowscale;
@@ -479,7 +449,7 @@ static int luaTL_gemm_ex_launch(
         }
     }
 
-    /* --- shared-memory tiled fallback --------------------------------- */
+    /* --- shared-memory tiled fallback --- */
     if (M <= 8) {
         dim3 blk(32, 8, 1);
         dim3 grd((unsigned)((N + 31) / 32), (unsigned)((M + 7) / 8), (unsigned)batch);
@@ -511,13 +481,10 @@ static int luaTL_gemm_ex_launch(
     : (dt) == LUATL_BF16 ? FN<luatl_bf16>(__VA_ARGS__)                     \
                          : FN<float>(__VA_ARGS__) )
 
-/* =====================================================================
- *  SECTION T3 :: RMSNorm backward
- *
+/*   RMSNorm backward
  *   y_i = g_i * x_i * s ,  s = rsqrt(mean(x^2) + eps)
  *   dx_i = s*g_i*dy_i - (x_i * s^3 / N) * sum_j (dy_j * g_j * x_j)
- *   dg_i = sum_over_rows( dy_i * x_i * s )      [fp32, atomic accumulate]
- * ================================================================== */
+ *   dg_i = sum_over_rows( dy_i * x_i * s )      [fp32, atomic accumulate]*/
 template <typename T>
 __global__ void luaTL_rmsnorm_bwd_kernel(const T* __restrict__ x,
                                          const T* __restrict__ g,
@@ -569,14 +536,11 @@ static int luaTL_rmsnorm_bwd_launch(const void* x, const void* g, const void* dy
     return luaTL_launch_async("rmsnorm_bwd");
 }
 
-/* =====================================================================
- *  SECTION T4 :: Group-aware softmax (fixes multi-head causal masking)
- *                and its backward.
+/*   Group-aware softmax (fixes multi-head causal masking) and its backward.
  *
  *  `group` : number of rows per logical sequence.  Row r belongs to
  *            position (r % group).  Pass group = T when scores are
- *            packed as [H*T, T]; pass 0/rows for a plain matrix.
- * ================================================================== */
+ *            packed as [H*T, T]; pass 0/rows for a plain matrix.*/
 template <typename T>
 __global__ void luaTL_softmax_ex_kernel(const T* __restrict__ x,
                                         const T* __restrict__ bias,
@@ -676,12 +640,9 @@ static int luaTL_softmax_bwd_launch(const void* y, const void* dy, void* dx,
     return luaTL_launch_async("softmax_bwd");
 }
 
-/* =====================================================================
- *  SECTION T5 :: SwiGLU  (out = silu(a) * b)
- *
+/*  SwiGLU  (out = silu(a) * b)
  *  Strided so that the packed layout works too: for a single [rows,2*cols]
- *  tensor pass a = base, b = base + cols, lda = ldb = 2*cols.
- * ================================================================== */
+ *  tensor pass a = base, b = base + cols, lda = ldb = 2*cols.*/
 template <typename T>
 __global__ void luaTL_swiglu_fwd_kernel(const T* __restrict__ a,
                                         const T* __restrict__ b,
@@ -750,13 +711,10 @@ static int luaTL_swiglu_bwd_launch(const void* a, const void* b, const void* dou
     return luaTL_launch_async("swiglu_bwd");
 }
 
-/* =====================================================================
- *  SECTION T6 :: RoPE (forward and inverse share one kernel)
- *
+/*  RoPE (forward and inverse share one kernel)
  *  layout 0 = half-split (Llama / GPT-NeoX):  pairs (i, i + hd/2)
  *  layout 1 = interleaved (GPT-J):            pairs (2i, 2i+1)
- *  inverse = 1 negates the sine, which is exactly the backward pass.
- * ================================================================== */
+ *  inverse = 1 negates the sine, which is exactly the backward pass. */
 template <typename T>
 __global__ void luaTL_rope_kernel(T* __restrict__ x,
                                   const int32_t* __restrict__ pos_ids,
@@ -808,9 +766,7 @@ static int luaTL_rope_launch(void* x, const int32_t* pos_ids,
     return luaTL_launch_async("rope");
 }
 
-/* =====================================================================
- *  SECTION T7 :: Embedding gather / scatter-add
- * ================================================================== */
+/*Embedding gather / scatter-add*/
 template <typename T>
 __global__ void luaTL_embed_fwd_kernel(const int32_t* __restrict__ ids,
                                        const T* __restrict__ table,
@@ -873,12 +829,10 @@ static int luaTL_embed_bwd_launch(const void* ids, const void* dout, void* dtabl
     return luaTL_launch_async("embed_bwd");
 }
 
-/* =====================================================================
- *  SECTION T8 :: Fused softmax + cross-entropy + dlogits
+/*  Fused softmax + cross-entropy + dlogits
  *
  *  Keeps the [rows, vocab] logits on the GPU.  Emits only a float[rows]
- *  loss vector, which is 4 bytes/token instead of 4*V bytes/token.
- * ================================================================== */
+ *  loss vector, which is 4 bytes/token instead of 4*V bytes/token.*/
 template <typename T>
 __global__ void luaTL_ce_kernel(const T* __restrict__ logits,
                                 const int32_t* __restrict__ targets,
@@ -936,9 +890,7 @@ static int luaTL_ce_launch(const void* logits, const void* targets,
     return luaTL_launch_async("cross_entropy");
 }
 
-/* =====================================================================
- *  SECTION T9 :: Reductions, clipping, argmax, gather
- * ================================================================== */
+/*Reductions, clipping, argmax, gather*/
 template <typename T>
 __global__ void luaTL_reduce_cols_kernel(const T* __restrict__ x,
                                          float* __restrict__ out,
@@ -1115,9 +1067,7 @@ static int luaTL_rowrms_launch(const void* x, float* out, int rows, int cols,
     return luaTL_launch_async("rowrms");
 }
 
-/* =====================================================================
- *  SECTION T10 :: Exported C API for everything above
- * ================================================================== */
+/* Exported C API for everything above*/
 extern "C" {
 
 LUATL_API const char* luaTL_train_version(void) { return LUATL_TRAIN_VERSION_STRING; }
@@ -1345,14 +1295,13 @@ LUATL_API int luaTL_download_f32(const void* dev, float* host, uint64_t n)
     return LUATL_OK;
 }
 
-/* ---- SAFE teardown --------------------------------------------------
+/* ---- SAFE teardown ----
  * Use THIS instead of luaTL_shutdown()/luaTL_shutdown_safe() from Lua.
  * It releases all device memory but deliberately keeps the host-side
  * pool bookkeeping alive, so that a Lua __gc finalizer that fires after
  * teardown finds in_use == 0 and returns harmlessly instead of touching
  * freed host memory.  The residual host allocation is a few KB and is
- * reclaimed by the OS at process exit.
- * ------------------------------------------------------------------ */
+ * reclaimed by the OS at process exit.*/
 LUATL_API void luaTL_finalize(void)
 {
     g_epoch++;
@@ -1375,9 +1324,7 @@ LUATL_API void luaTL_finalize(void)
 
 } /* extern "C" */
 
-/* =====================================================================
- *  SECTION T11 :: Program buffer + CUDA Graph capture
- * ================================================================== */
+/*Program buffer + CUDA Graph capture*/
 
 /* ---- void* adapters so LTL_DISPATCH can reach core's typed launchers */
 template <typename T>

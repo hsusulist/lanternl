@@ -1,8 +1,4 @@
-/* =====================================================================
- *  luaTL_core.cu — Lua Train Language :: Ultra High Performance
- *                  CUDA C++ Acceleration Backend  (v2.0)
- *
- *  Build:
+/*  Build:
  *    Linux :
  *      nvcc -O3 -std=c++14 --shared -Xcompiler -fPIC \
  *           -gencode arch=compute_70,code=sm_70 \
@@ -14,19 +10,7 @@
  *
  *    Windows:
  *      nvcc -O3 -std=c++14 --shared -gencode arch=compute_86,code=sm_86 ^
- *           --use_fast_math luaTL_core.cu -o luaTL.dll
- *
- *  Design rules
- *  ------------
- *   * Every public entry point returns int (0 = OK, non-zero = error code)
- *     unless it returns a pointer or a const char*.  Lua therefore never
- *     needs a second FFI call just to poll the error flag.
- *   * Every `nelem` argument is an ELEMENT COUNT; every `nbytes` argument
- *     is a BYTE COUNT.  The two are never mixed.
- *   * All tensors are row major and C-contiguous.
- *   * Accumulation is ALWAYS fp32 regardless of the storage dtype.
- *   * No cuBLAS, no cuDNN, no Thrust, no STL containers in hot paths.
- * ===================================================================== */
+ *           --use_fast_math luaTL_core.cu -o luaTL.dll */
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -46,19 +30,15 @@
 
 #define LUATL_VERSION_STRING "luaTL-core 2.0.0"
 
-/* ---------------------------------------------------------------------
- *  Compile time configuration
- * ------------------------------------------------------------------ */
-#define LUATL_BLOCK_1D          256    /* element-wise block size        */
-#define LUATL_ROW_THREADS_MAX   1024   /* max threads for a row kernel   */
-#define LUATL_ROW_THREADS_MIN   32     /* must stay a multiple of warp   */
+/*  Compile time configuration*/
+#define LUATL_BLOCK_1D          256    /* element-wise block size*/
+#define LUATL_ROW_THREADS_MAX   1024   /* max threads for a row kernel*/
+#define LUATL_ROW_THREADS_MIN   32     /* must stay a multiple of warp*/
 #define LUATL_MAX_GRID_1D       65535u
 #define LUATL_AUTOTUNE_SLOTS    256
 #define LUATL_ERRBUF            1024
 
-/* ---------------------------------------------------------------------
- *  Public enumerations (mirrored verbatim in luaTL.lua)
- * ------------------------------------------------------------------ */
+/*  Public enumerations (mirrored verbatim in luaTL.lua) */
 enum luaTL_dtype_e {
     LUATL_F32  = 0,
     LUATL_F16  = 1,
@@ -137,9 +117,7 @@ enum luaTL_status_e {
     LUATL_ERR_UNSUPPORT = -8
 };
 
-/* =====================================================================
- *  SECTION 0 :: Error plumbing
- * ================================================================== */
+/* Error plumbing*/
 
 static char g_err[LUATL_ERRBUF]   = {0};
 static int  g_has_err             = 0;
@@ -187,9 +165,7 @@ static int luaTL_launch_sync(const char *ctx)
     return LUATL_OK;
 }
 
-/* =====================================================================
- *  SECTION 1 :: Public POD structures (byte-identical in ffi.cdef)
- * ================================================================== */
+/*Public POD structures (byte-identical in ffi.cdef)*/
 
 typedef struct {
     int32_t  device;
@@ -308,9 +284,7 @@ typedef struct {
     int32_t      timing;     /* 1 => record events around the run        */
 } luaTL_pipeline_t;
 
-/* =====================================================================
- *  SECTION 2 :: Numeric traits — fp32 / fp16 / bf16
- * ================================================================== */
+/* Numeric traits — fp32 / fp16 / bf16*/
 
 typedef uint16_t luatl_bf16;
 
@@ -382,9 +356,7 @@ static __forceinline__ const char* luaTL_dtype_name(int dt)
     }
 }
 
-/* =====================================================================
- *  SECTION 3 :: Device-side math helpers
- * ================================================================== */
+/*Device-side math helpers*/
 
 #define LUATL_GELU_C0 0.7978845608028654f   /* sqrt(2/pi)               */
 #define LUATL_GELU_C1 0.044715f
@@ -443,7 +415,7 @@ __device__ __forceinline__ float luatl_apply_pre(int pre, float v)
     }
 }
 
-/* ---- warp / block reductions -------------------------------------- */
+/* warp / block reductions */
 
 __device__ __forceinline__ float luatl_warp_sum(float v)
 {
@@ -505,9 +477,7 @@ __device__ __forceinline__ float luatl_block_max(float v, float* smem)
     return out;
 }
 
-/* =====================================================================
- *  SECTION 4 :: Global device state + hardware autotuner tables
- * ================================================================== */
+/*Global device state + hardware autotuner tables*/
 
 static int              g_initialized   = 0;
 static int              g_device        = 0;
@@ -586,7 +556,7 @@ static void luaTL_fill_devinfo(int device, const cudaDeviceProp* p,
     snprintf(d->name, sizeof(d->name), "%s", p->name);
 }
 
-/* ---- grid sizing helper ------------------------------------------- */
+/* grid sizing helper */
 static __forceinline__ unsigned int luaTL_grid1d(uint64_t n, int block)
 {
     uint64_t g = (n + (uint64_t)block - 1) / (uint64_t)block;
@@ -610,9 +580,7 @@ static __forceinline__ int luaTL_row_threads(int cols)
     return t;
 }
 
-/* =====================================================================
- *  SECTION 5 :: Caching device memory pool  (zero-allocation engine)
- * ================================================================== */
+/*Caching device memory pool  (zero-allocation engine)*/
 
 #define LUATL_MIN_SHIFT   8                       /* 256 B smallest class */
 #define LUATL_MAX_SHIFT   40                      /* 1 TB largest class   */
@@ -919,9 +887,7 @@ static void luaTL_pool_free_internal(luaTL_pool_t* P, void* ptr)
 
 static luaTL_pool_t* g_pool = NULL;
 
-/* =====================================================================
- *  SECTION 6 :: Host staging buffer (dtype conversion on upload)
- * ================================================================== */
+/*Host staging buffer (dtype conversion on upload)*/
 
 static void*  g_stage      = NULL;
 static size_t g_stage_size = 0;
@@ -936,9 +902,7 @@ static void* luaTL_stage(size_t bytes)
     return g_stage;
 }
 
-/* =====================================================================
- *  SECTION 7 :: Element-wise kernels
- * ================================================================== */
+/*Element-wise kernels*/
 
 __device__ __forceinline__ float luatl_ew_apply(int op, float a, float b,
                                                 float alpha, float beta)
@@ -1037,7 +1001,7 @@ __global__ void luaTL_ew_half2_kernel(const __half2* __restrict__ A,
 #endif
 }
 
-/* ---- dtype conversion ---------------------------------------------- */
+/* dtype conversion */
 template <typename TS, typename TD>
 __global__ void luaTL_cast_kernel(const TS* __restrict__ src,
                                   TD*       __restrict__ dst,
@@ -1049,7 +1013,7 @@ __global__ void luaTL_cast_kernel(const TS* __restrict__ src,
         TAcc<TD>::st(dst, (size_t)idx, TAcc<TS>::ld(src, (size_t)idx));
 }
 
-/* ---- row-broadcast add: out[r][c] = x[r][c] + v[c] ------------------ */
+/* row-broadcast add: out[r][c] = x[r][c] + v[c] */
 template <typename T>
 __global__ void luaTL_bcast_add_kernel(const T* __restrict__ x,
                                        const T* __restrict__ v,
@@ -1067,7 +1031,7 @@ __global__ void luaTL_bcast_add_kernel(const T* __restrict__ x,
     }
 }
 
-/* ---- tiled transpose ------------------------------------------------ */
+/* tiled transpose */
 template <typename T>
 __global__ void luaTL_transpose_kernel(const T* __restrict__ in,
                                        T*       __restrict__ out,
@@ -1099,9 +1063,7 @@ __global__ void luaTL_transpose_kernel(const T* __restrict__ in,
     }
 }
 
-/* =====================================================================
- *  SECTION 8 :: RMSNorm / Softmax kernels (fp32 / fp16 / bf16)
- * ================================================================== */
+/*RMSNorm / Softmax kernels (fp32 / fp16 / bf16)*/
 
 /* Per-row inverse RMS, written as fp32 so the fused GEMM can consume it. */
 template <typename T>
@@ -1200,19 +1162,15 @@ __global__ void luaTL_softmax_kernel(const T* __restrict__ x,
         TAcc<T>::st(orw, (size_t)i, TAcc<T>::ld(orw, (size_t)i) * inv);
 }
 
-/* =====================================================================
- *  SECTION 9 :: The fused GEMM mega-kernel
- *
+/* fused GEMM mega-kernel
  *    C = post( alpha * ( pre(A) @ B ) + bias ) + beta * C
- *
  *  pre  : NONE | RMSNORM(gamma) | GELU | SILU | RELU   (applied to A)
  *  post : NONE | RELU | GELU | SILU | TANH | SIGMOID
  *
  *  Block layout : blockDim = (TN, TM),  one output tile of TM x TN.
  *  Shared usage : A-tile TM x (TK+1), B-tile TK x (TN+1); the RMS
  *                 reduction scratch is ALIASED onto that same storage
- *                 because its lifetime ends before the K-loop begins.
- * ================================================================== */
+ *                 because its lifetime ends before the K-loop begins.*/
 
 template <typename T, int TM, int TN, int TK>
 __global__ void luaTL_gemm_fused_kernel(
@@ -1247,7 +1205,7 @@ __global__ void luaTL_gemm_fused_kernel(
     const int row  = row0 + ty;
     const int col  = col0 + tx;
 
-    /* ---------------- prologue: per-row RMS scale ------------------- */
+    /* prologue: per-row RMS scale */
     if (pre_op == LUATL_PRE_RMSNORM) {
         if (rowscale != NULL) {
             if (tid < TM) {
@@ -1279,7 +1237,7 @@ __global__ void luaTL_gemm_fused_kernel(
         }
     }
 
-    /* ---------------- main K loop ----------------------------------- */
+    /* main K loop */
     float acc = 0.0f;
 
     for (int t0 = 0; t0 < K; t0 += TK) {
@@ -1322,7 +1280,7 @@ __global__ void luaTL_gemm_fused_kernel(
         __syncthreads();
     }
 
-    /* ---------------- epilogue -------------------------------------- */
+    /* epilogue */
     if (row < M && col < N) {
         const size_t oi = (size_t)row * N + col;
         float v = alpha * acc;
@@ -1333,10 +1291,8 @@ __global__ void luaTL_gemm_fused_kernel(
     }
 }
 
-/* ---------------------------------------------------------------------
- *  Tensor Core (WMMA) fp16 GEMM.  One warp per 16x16 output tile.
- *  Requires sm_70+, M/N/K all multiples of 16 and pre_op == NONE.
- * ------------------------------------------------------------------ */
+/* Tensor Core (WMMA) fp16 GEMM.  One warp per 16x16 output tile.
+ *  Requires sm_70+, M/N/K all multiples of 16 and pre_op == NONE.*/
 __global__ void luaTL_gemm_wmma_kernel(const __half* __restrict__ A,
                                        const __half* __restrict__ B,
                                        __half*       __restrict__ C,
@@ -1386,10 +1342,8 @@ __global__ void luaTL_gemm_wmma_kernel(const __half* __restrict__ A,
 #endif
 }
 
-/* =====================================================================
- *  SECTION 10 :: Fused AdamW optimiser step
- *   fp32 master weights + optional low precision mirror copy.
- * ================================================================== */
+/*   Fused AdamW optimiser step
+ *   fp32 master weights + optional low precision mirror copy.*/
 template <typename TG>
 __global__ void luaTL_adamw_kernel(float*    __restrict__ w,
                                    const TG* __restrict__ g,
@@ -1425,9 +1379,7 @@ __global__ void luaTL_adamw_kernel(float*    __restrict__ w,
     }
 }
 
-/* =====================================================================
- *  SECTION 11 :: Hardware aware autotuner
- * ================================================================== */
+/*Hardware aware autotuner*/
 
 typedef struct {
     int32_t M, N, K, dtype;
@@ -1556,9 +1508,7 @@ static void luaTL_choose_gemm(int M, int N, int K, int dtype,
     }
 }
 
-/* =====================================================================
- *  SECTION 12 :: Typed launchers (stream aware, non synchronizing)
- * ================================================================== */
+/*Typed launchers (stream aware, non synchronizing)*/
 
 template <typename T>
 static int luaTL_gemm_launch(const T* A, const T* B, T* C,
@@ -1715,13 +1665,11 @@ static int luaTL_transpose_launch(const T* in, T* out, int rows, int cols,
 
 #define LUATL_PTR(dtype, T, p) ((T*)(p))
 
-/* =====================================================================
- *  SECTION 13 :: Exported C API
- * ================================================================== */
+/*Exported C API*/
 
 extern "C" {
 
-/* ------------------------- runtime ------------------------------- */
+/* runtime */
 
 LUATL_API const char* luaTL_version(void) { return LUATL_VERSION_STRING; }
 
@@ -1823,7 +1771,7 @@ LUATL_API int luaTL_mem_info(uint64_t* freeb, uint64_t* totalb)
     return LUATL_OK;
 }
 
-/* ------------------------- streams -------------------------------- */
+/* streams */
 
 LUATL_API void* luaTL_stream_create(int nonblocking)
 {
@@ -1848,7 +1796,7 @@ LUATL_API int luaTL_stream_sync(void* s)
     return LUATL_OK;
 }
 
-/* ------------------------- pinned host memory --------------------- */
+/* pinned host memory */
 
 LUATL_API void* luaTL_host_alloc_pinned(uint64_t bytes)
 {
@@ -1865,7 +1813,7 @@ LUATL_API void luaTL_host_free_pinned(void* p)
     cudaGetLastError();
 }
 
-/* ------------------------- memory pool ---------------------------- */
+/* memory pool */
 
 LUATL_API luaTL_pool_t* luaTL_pool_create(int device)
 {
@@ -1927,7 +1875,7 @@ LUATL_API int luaTL_pool_owns(luaTL_pool_t* P, void* ptr)
     return (luaTL_hash_find(P, (uintptr_t)ptr) >= 0) ? 1 : 0;
 }
 
-/* ------------------------- device arena --------------------------- */
+/* device arena */
 
 LUATL_API luaTL_arena_t* luaTL_arena_create(luaTL_pool_t* P, uint64_t bytes)
 {
@@ -1976,7 +1924,7 @@ LUATL_API void luaTL_arena_reset(luaTL_arena_t* A)
     if (A) A->offset = 0;
 }
 
-/* ------------------------- tensors -------------------------------- */
+/* tensors */
 
 LUATL_API int luaTL_tensor_init(luaTL_tensor_t* t, int rows, int cols,
                                 int dtype, luaTL_pool_t* P)
@@ -2210,16 +2158,13 @@ LUATL_API int luaTL_gpu_copy(const float* src, float* dst, uint64_t nelem) { if 
 
 LUATL_API int luaTL_gpu_zero(float* p, uint64_t nelem) { if (!p || nelem == 0) return LUATL_ERR_NULL; LUATL_CHECK("cudaMemset", cudaMemset(p, 0, (size_t)nelem * 4)); return LUATL_OK; }
 
-/* ------------------------- autotuner API --------------------------- */
+/*autotuner API */
 
 LUATL_API int luaTL_plan_gemm(int M, int N, int K, int dtype, int allow_tc, luaTL_plan_t* out) { if (!out) return LUATL_ERR_NULL; if (M <= 0 || N <= 0 || K <= 0) return LUATL_ERR_SHAPE; luaTL_choose_gemm(M, N, K, dtype, allow_tc, out); return LUATL_OK; }
 
 LUATL_API void luaTL_set_tile_override(int kernel_id) { g_tile_override = kernel_id; } LUATL_API void luaTL_tune_reset(void) { memset(g_tune, 0, sizeof(g_tune)); }
 
 /* Benchmark every legal kernel for this shape and cache the winner. */
-/* ---- PATCHED: type-correct dtype dispatch (the old LUATL_DISPATCH
- *      version passed const float* into the __half/bf16 instantiations,
- *      which is a hard compile error). --------------------------------- */
 static int luaTL_bench_one(int id, int dtype,
                            void* dA, void* dB, void* dC,
                            int M, int N, int K)
@@ -2321,7 +2266,7 @@ LUATL_API int luaTL_autotune_benchmark(int M, int N, int K, int dtype, int iters
 
 
 
-/* ------------------------- one-shot math API ----------------------- */
+/* one-shot math API  */
 /* All of these synchronize; use the pipeline for latency-critical work.*/
 
 LUATL_API int luaTL_gemm(const void* A, const void* B, void* C, const void* bias, const void* gamma, const float* rowscale, int M, int N, int K, int dtype, float alpha, float beta, float eps, int pre_op, int post_op) 
@@ -2488,9 +2433,7 @@ LUATL_API int luaTL_adamw(float* w, const void* g, float* m, float* v, void* w_l
     return luaTL_launch_sync("adamw");
 }
 
-/* =====================================================================
- *  SECTION 14 :: Batch command pipeline
- * ================================================================== */
+/*Batch command pipeline*/
 LUATL_API luaTL_pipeline_t* luaTL_pipeline_create(int capacity, int timing) { 
     if (capacity <= 0) capacity = 512;
 

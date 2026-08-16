@@ -1,24 +1,7 @@
--- =====================================================================
---  luaTL.lua  —  LuaJIT FFI binding + zero-allocation tensor engine
---                for luaTL_core 2.0
---
---  Design notes
---  ------------
---   * A tensor is a `luaTL_tensor_t` cdata struct with an ffi.metatype,
---     NOT a Lua table.  There is no hash lookup on the hot path and the
---     GC sees exactly one object per tensor.
---   * Every C entry point returns an int status; `ck()` turns a non-zero
---     status into a Lua error.  Hot paths use the `_raw` variants that
---     skip the check entirely.
---   * The pipeline lets Lua describe a whole forward step with plain
---     struct stores and execute it with ONE FFI call.
--- =====================================================================
-
 local ffi  = require("ffi")
 local bit  = require("bit")
 
 ffi.cdef[[
-/* ---- POD structs (byte identical to luaTL_core.cu) ---------------- */
 typedef struct {
     int32_t  device, major, minor, mp_count, warp_size;
     int32_t  max_threads_per_block, max_threads_per_mp, max_blocks_per_mp;
@@ -79,7 +62,7 @@ typedef struct {
     int32_t      owns_stream, timing;
 } luaTL_pipeline_t;
 
-/* ---- runtime ------------------------------------------------------ */
+/* -- runtime -- */
 const char*  luaTL_version(void);
 void         luaTL_set_verbose(int on);
 int          luaTL_init(int device);
@@ -92,14 +75,14 @@ int          luaTL_sync(void);
 int          luaTL_get_devinfo(int device, luaTL_devinfo_t* out);
 int          luaTL_mem_info(uint64_t* freeb, uint64_t* totalb);
 
-/* ---- streams / pinned host memory --------------------------------- */
+/* -- streams / pinned host memory -- */
 void*        luaTL_stream_create(int nonblocking);
 void         luaTL_stream_destroy(void* s);
 int          luaTL_stream_sync(void* s);
 void*        luaTL_host_alloc_pinned(uint64_t bytes);
 void         luaTL_host_free_pinned(void* p);
 
-/* ---- pool --------------------------------------------------------- */
+/* -- pool -- */
 luaTL_pool_t* luaTL_pool_create(int device);
 void          luaTL_pool_destroy(luaTL_pool_t* P);
 luaTL_pool_t* luaTL_default_pool(void);
@@ -109,13 +92,13 @@ void          luaTL_pool_trim(luaTL_pool_t* P);
 int           luaTL_pool_get_stats(luaTL_pool_t* P, luaTL_pool_stats_t* out);
 int           luaTL_pool_owns(luaTL_pool_t* P, void* ptr);
 
-/* ---- arena -------------------------------------------------------- */
+/* -- arena -- */
 luaTL_arena_t* luaTL_arena_create(luaTL_pool_t* P, uint64_t bytes);
 void           luaTL_arena_destroy(luaTL_arena_t* A);
 void*          luaTL_arena_alloc(luaTL_arena_t* A, uint64_t bytes);
 void           luaTL_arena_reset(luaTL_arena_t* A);
 
-/* ---- tensors ------------------------------------------------------ */
+/* -- tensors -- */
 int  luaTL_tensor_init(luaTL_tensor_t* t, int rows, int cols, int dtype, luaTL_pool_t* P);
 int  luaTL_tensor_wrap(luaTL_tensor_t* t, void* data, int rows, int cols, int dtype);
 void luaTL_tensor_release(luaTL_tensor_t* t);
@@ -126,7 +109,7 @@ int  luaTL_tensor_download(const luaTL_tensor_t* t, float* host, uint64_t nelem)
 int  luaTL_tensor_copy(const luaTL_tensor_t* src, luaTL_tensor_t* dst);
 int  luaTL_tensor_cast(const luaTL_tensor_t* src, luaTL_tensor_t* dst);
 
-/* ---- legacy raw pointer API --------------------------------------- */
+/* -- legacy raw pointer API -- */
 float* luaTL_gpu_malloc(uint64_t nelem);
 void   luaTL_gpu_free(float* p);
 int    luaTL_to_gpu(const float* host, float* dev, uint64_t nelem);
@@ -134,13 +117,13 @@ int    luaTL_to_cpu(const float* dev, float* host, uint64_t nelem);
 int    luaTL_gpu_copy(const float* src, float* dst, uint64_t nelem);
 int    luaTL_gpu_zero(float* p, uint64_t nelem);
 
-/* ---- autotuner ---------------------------------------------------- */
+/* -- autotuner -- */
 int  luaTL_plan_gemm(int M, int N, int K, int dtype, int allow_tc, luaTL_plan_t* out);
 void luaTL_set_tile_override(int kernel_id);
 void luaTL_tune_reset(void);
 int  luaTL_autotune_benchmark(int M, int N, int K, int dtype, int iters, luaTL_plan_t* out);
 
-/* ---- math --------------------------------------------------------- */
+/* -- math --*/
 int luaTL_gemm(const void* A, const void* B, void* C, const void* bias,
                const void* gamma, const float* rowscale,
                int M, int N, int K, int dtype,
@@ -175,7 +158,7 @@ int luaTL_adamw(float* w, const void* g, float* m, float* v, void* w_lp,
                 uint64_t n, int grad_dtype, float lr, float beta1, float beta2,
                 float eps, float wd, int step, float clip);
 
-/* ---- pipeline ------------------------------------------------------ */
+/* -- pipeline -- */
 luaTL_pipeline_t* luaTL_pipeline_create(int capacity, int timing);
 void              luaTL_pipeline_destroy(luaTL_pipeline_t* P);
 void              luaTL_pipeline_reset(luaTL_pipeline_t* P);
@@ -184,9 +167,7 @@ int               luaTL_pipeline_run(luaTL_pipeline_t* P);
 int               luaTL_pipeline_wait(luaTL_pipeline_t* P);
 ]]
 
--- ---------------------------------------------------------------------
 --  Library loading
--- ---------------------------------------------------------------------
 local CANDIDATES
 if ffi.os == "Windows" then
     CANDIDATES = { "luaTL", "luaTL.dll", ".\\luaTL.dll" }
@@ -236,9 +217,7 @@ local STATUS_NAME = {
     [-7] = "CAPACITY", [-8] = "UNSUPPORTED",
 }
 
--- ---------------------------------------------------------------------
 --  Cached ctypes and reusable scratch cdata (avoids per-call allocation)
--- ---------------------------------------------------------------------
 local tensor_ct  = ffi.typeof("luaTL_tensor_t")
 local devinfo_ct = ffi.typeof("luaTL_devinfo_t")
 local plan_ct    = ffi.typeof("luaTL_plan_t")
@@ -249,9 +228,7 @@ local u64_2      = ffi.new("uint64_t[1]")
 local scratch_plan  = plan_ct()
 local scratch_stats = stats_ct()
 
--- ---------------------------------------------------------------------
 --  Error handling
--- ---------------------------------------------------------------------
 local function last_error()
     local msg = ffi.string(C.luaTL_get_last_error())
     C.luaTL_clear_error()
@@ -269,9 +246,7 @@ local function ck(status, ctx)
 end
 luaTL.check = ck
 
--- ---------------------------------------------------------------------
 --  Runtime control
--- ---------------------------------------------------------------------
 luaTL.devinfo = nil
 luaTL.device  = "<uninitialized>"
 
@@ -329,9 +304,7 @@ function luaTL.hardware()
     }
 end
 
--- ---------------------------------------------------------------------
 --  Pool
--- ---------------------------------------------------------------------
 function luaTL.pool_stats(pool)
     ck(C.luaTL_pool_get_stats(pool or nil, scratch_stats), "pool_stats")
     local s = scratch_stats
@@ -353,9 +326,7 @@ end
 
 function luaTL.pool_trim(pool) C.luaTL_pool_trim(pool or nil) end
 
--- ---------------------------------------------------------------------
 --  Arena (bump allocator; Lua bumps `offset` with zero FFI calls)
--- ---------------------------------------------------------------------
 local Arena = {}
 Arena.__index = Arena
 
@@ -397,9 +368,7 @@ end
 
 luaTL.ArenaClass = Arena
 
--- ---------------------------------------------------------------------
 --  Tensor : ffi.metatype over luaTL_tensor_t  (no Lua tables, no hash)
--- ---------------------------------------------------------------------
 local Tensor = {}
 
 local function dt_of(x)
@@ -485,7 +454,7 @@ function luaTL.xavier(rows, cols, dtype)
     return luaTL.random(rows, cols, math.sqrt(6.0 / (rows + cols)), dtype)
 end
 
--- ---- introspection --------------------------------------------------
+-- introspection
 function Tensor:shape()    return self.rows, self.cols end
 function Tensor:numel()    return tonumber(self.nelem) end
 function Tensor:bytes()    return tonumber(self.nbytes) end
@@ -493,7 +462,7 @@ function Tensor:dtype_name() return luaTL.dtype_name[self.dtype] end
 function Tensor:ptr()      return self.data end
 function Tensor:is_null()  return self.data == nil end
 
--- ---- lifetime -------------------------------------------------------
+--  lifetime 
 function Tensor:free()
     C.luaTL_tensor_release(self)
     return self
@@ -504,7 +473,7 @@ function Tensor:zero()
     return self
 end
 
---- Non-owning row-slice view.  `rows`/`cols` default to the remainder.
+-- Non-owning row-slice view.  `rows`/`cols` default to the remainder.
 function Tensor:view(row_off, rows, cols)
     local v = tensor_ct()
     ck(C.luaTL_tensor_view(v, self, row_off or 0, rows or 0, cols or 0), "view")
@@ -537,7 +506,7 @@ function Tensor:cast(dtype)
     return t
 end
 
--- ---- host transfer --------------------------------------------------
+-- host transfer
 function Tensor:upload(host_buf, n)
     ck(C.luaTL_tensor_upload(self, host_buf, n or 0), "upload")
     return self
@@ -595,7 +564,7 @@ function Tensor:set(r, c, v)
     return self
 end
 
--- ---- math : allocating variants ------------------------------------
+-- math : allocating variants 
 function Tensor:matmul(B, opts)
     opts = opts or {}
     if self.cols ~= B.rows then
@@ -661,7 +630,7 @@ function Tensor:add(B)
     return out
 end
 
---- self += alpha * B  (no allocation whatsoever)
+-- self += alpha * B  (no allocation whatsoever)
 function Tensor:add_inplace(B, alpha)
     ck(C.luaTL_elementwise(self.data, B.data, self.data, self.nelem,
                            self.dtype, luaTL.EW.AXPY, alpha or 1.0, 0.0),
@@ -749,7 +718,7 @@ function Tensor:transpose()
     return out
 end
 
--- ---- operators / printing -------------------------------------------
+-- operators / printing
 local function ts(t)
     return string.format("luaTL.Tensor<%s>(%dx%d, %d bytes, %s)",
         luaTL.dtype_name[t.dtype] or "?", t.rows, t.cols,
@@ -784,9 +753,7 @@ function Tensor:print(label)
     return self
 end
 
--- ---------------------------------------------------------------------
 --  Autotuner
--- ---------------------------------------------------------------------
 local function plan_to_table(p)
     return {
         tm = p.tm, tn = p.tn, tk = p.tk,
@@ -816,9 +783,7 @@ end
 function luaTL.set_tile_override(id) C.luaTL_set_tile_override(id or -1) end
 function luaTL.tune_reset() C.luaTL_tune_reset() end
 
--- ---------------------------------------------------------------------
 --  Pipeline : queue many GPU ops, run them with ONE FFI call
--- ---------------------------------------------------------------------
 local Pipeline = {}
 Pipeline.__index = Pipeline
 luaTL.PipelineClass = Pipeline
@@ -1029,9 +994,7 @@ function Pipeline:stats()
              last_ms = self.h.last_ms }
 end
 
--- ---------------------------------------------------------------------
 --  Convenience: fused free functions mirroring the C names
--- ---------------------------------------------------------------------
 function luaTL.matmul(A, B, opts) return A:matmul(B, opts) end
 
 function luaTL.adamw(w, g, m, v, w_lp, o)

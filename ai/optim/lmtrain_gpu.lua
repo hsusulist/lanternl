@@ -1,14 +1,4 @@
--- =====================================================================
---  lmtrain_gpu.lua — installs the GPU-resident backend into ai.LMTrain
---
---  Call:  require("lmtrain_gpu").install(LMTrain)
---
---  Adds:  LMTrain:_build_gpu(), LMTrain:_run_gpu(), LMTrain:_gpu_push(),
---         LMTrain:_gpu_pull(), LMTrain:_evaluate_gpu()
---  Wraps: LMTrain.load (marks host weights dirty so they get pushed)
---
 --  The CPU path is never touched.  If backend ~= "gpu" none of this runs.
--- =====================================================================
 
 local lmlog = require("lmlog")
 
@@ -17,15 +7,12 @@ local G = {}
 local floor, ceil, huge, sqrt = math.floor, math.ceil, math.huge, math.sqrt
 local sformat = string.format
 
--- ---------------------------------------------------------------------
---  Parameter shim
---
+
 --  lmio (:save/:load), LMTrain._snapshot and LMTrain._restore all walk
 --  `params[i].data.data` as a flat 1-indexed Lua table.  We hand them a
 --  host mirror of each GPU parameter with exactly that shape, so every
---  existing persistence path keeps working verbatim.  The mirror is
+--  existing persistence path keeps working verbatim. The mirror is
 --  pulled from VRAM on demand and pushed back when marked dirty.
--- ---------------------------------------------------------------------
 local function make_shims(model)
     local shims = {}
     for i = 1, #model.params do
@@ -45,9 +32,7 @@ function G.install(LMTrain)
     if LMTrain._gpu_installed then return LMTrain end
     LMTrain._gpu_installed = true
 
-    -- -----------------------------------------------------------------
     --  Host <-> device weight mirroring
-    -- -----------------------------------------------------------------
     function LMTrain:_gpu_pull()
         if not self.gpu_model then return self end
         for i = 1, #self.params do
@@ -66,14 +51,10 @@ function G.install(LMTrain)
             if flat and #flat == s.gpu.nelem then s.gpu.w:upload(flat) end
         end
         self._host_dirty = false
-        -- weights changed underneath a captured graph's pointers?  No --
-        -- upload writes in place, the pointers are identical.  Safe.
         return self
     end
 
-    -- -----------------------------------------------------------------
     --  Build
-    -- -----------------------------------------------------------------
     function LMTrain:_build_gpu()
         local ok_ad, adapter = pcall(require, "luatl_adapter")
         if not ok_ad or not adapter.available then
@@ -140,9 +121,7 @@ function G.install(LMTrain)
         return self
     end
 
-    -- -----------------------------------------------------------------
-    --  Evaluation (forward only)
-    -- -----------------------------------------------------------------
+    --  evaluation (forward only)
     function LMTrain:_evaluate_gpu(windows)
         local m  = self.gpu_model
         local bs = m.B
@@ -162,9 +141,7 @@ function G.install(LMTrain)
         return tot / cnt, 100 * cor / cnt
     end
 
-    -- -----------------------------------------------------------------
     --  The GPU run loop
-    -- -----------------------------------------------------------------
     function LMTrain:_run_gpu(train_w, val_w, build_windows)
         local m  = self.gpu_model
         local bs = m.B
@@ -216,7 +193,7 @@ function G.install(LMTrain)
                 self.cur_lr = lr
                 self.opt.lr = lr
 
-                -- token ids in -> loss out -> weights updated, all on GPU
+                -- token ids in -> loss out -> weights updated
                 local loss, corr, tok, gnorm, finite =
                     m:train_step(batch, n, lr, (m.steps or 0) + 1)
 
@@ -241,7 +218,6 @@ function G.install(LMTrain)
                     })
                 end
 
-                -- graph capture once the shapes have settled
                 m:maybe_capture()
             end
 
@@ -347,7 +323,7 @@ function G.install(LMTrain)
             end
         end
 
-        self:_gpu_pull()          -- keep :save() correct without extra work
+        self:_gpu_pull()
         self.opt.lr = self.base_lr
         self.lr = self.base_lr
 
@@ -355,9 +331,7 @@ function G.install(LMTrain)
         return self.model
     end
 
-    -- -----------------------------------------------------------------
-    --  :load() must push the freshly read weights into VRAM
-    -- -----------------------------------------------------------------
+    --  :load()
     local prev_load = LMTrain.load
     if type(prev_load) == "function" then
         function LMTrain:load(...)

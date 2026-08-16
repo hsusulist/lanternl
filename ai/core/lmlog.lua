@@ -1,20 +1,3 @@
--- =====================================================================
---  lmlog.lua — wall-clock, time-throttled training progress reporter
---
---  Why this exists
---  ---------------
---   * The old logger fired once per EPOCH.  A 90-second epoch meant 90
---     seconds of a frozen terminal.  This one fires on a WALL-CLOCK
---     interval (default 200 ms) during the epoch, so you see the bar
---     move within the first fraction of a second.
---   * os.clock() is CPU time.  While the GPU works, or while the OS
---     deschedules you, it barely advances -- so throughput and ETA were
---     both wildly overstated.  We use gettimeofday (falling back to
---     os.time) for real elapsed seconds.
---   * Throughput is a rolling window over the last ~2 s, not a
---     since-the-beginning average, so it reacts to what is happening now.
--- =====================================================================
-
 local ffi = require("ffi")
 
 local L = {}
@@ -22,7 +5,7 @@ local L = {}
 local floor, exp, huge = math.floor, math.exp, math.huge
 local sformat, srep = string.format, string.rep
 
--- ---- wall clock ------------------------------------------------------
+-- ---- wall clock ----
 local now
 do
     local ok = pcall(ffi.cdef, [[
@@ -85,9 +68,7 @@ function L.fmt_count(n)
     return sformat("%d", n)
 end
 
--- =====================================================================
 --  Reporter object
--- =====================================================================
 local R = {}
 R.__index = R
 

@@ -720,7 +720,7 @@ if self.val_split > 0 and #all > 1 then
     for i = #all - nval + 1, #all do val_w[#val_w + 1] = all[i] end
 end
 
--- ---- GPU-resident path ----------------------------------------------
+-- GPU-resident path
 if self.gpu_model then
     return self:_run_gpu(train_w, val_w, build_windows)
 end

@@ -1,19 +1,4 @@
--- =====================================================================
---  luatl_adapter.lua — lanternl <-> luaTL bridge
---
---  Replaces the old luatl_adapter.lua.  100% backward compatible:
---    M.matmul(a_flat, m, k, b_flat, n) -> flat 1-indexed table (m*n)
---    M.rmsnorm(x_flat, rows, cols [, w_flat, eps]) -> flat table
---    M.softmax(x_flat, rows, cols)                 -> flat table
---    M.softmax_causal(x_flat, rows, cols [, scale])-> flat table
---
---  NEW (opt-in, nothing breaks if unused):
---    * The same functions accept GPU HANDLES instead of flat tables.
---    * M.pin(flat, rows, cols)  -> upload a weight ONCE, forever.
---    * Transposed-GEMM helpers for the backward pass.
---    * A resident tensor toolkit (stride views, offset pointers, int32
---      index buffers, scalar readback) used by gpu_transformer.lua.
--- =====================================================================
+--  lanternl <-> luaTL bridge
 
 local M = { name = "luatl", priority = 100, available = false }
 
@@ -36,9 +21,7 @@ local F32     = luaTL.F32
 local f32_ct  = ffi.typeof("float[?]")
 local i32_ct  = ffi.typeof("int32_t[?]")
 
--- ---------------------------------------------------------------------
 --  Cached host staging buffers (stops per-call cdata churn)
--- ---------------------------------------------------------------------
 local stage, stage_n = {}, {}
 local function host_buf(slot, n)
     if not stage[slot] or stage_n[slot] < n then
@@ -48,9 +31,7 @@ local function host_buf(slot, n)
     return stage[slot]
 end
 
--- ---------------------------------------------------------------------
 --  Cached device scratch, keyed by "rows x cols" (pool-backed)
--- ---------------------------------------------------------------------
 local scratch = {}
 local function dev_scratch(slot, rows, cols)
     local key = slot .. ":" .. rows .. "x" .. cols
@@ -62,9 +43,7 @@ local function dev_scratch(slot, rows, cols)
     return t
 end
 
--- ---------------------------------------------------------------------
 --  Handles: a persistent GPU tensor exposed to lanternl
--- ---------------------------------------------------------------------
 local Handle = {}
 Handle.__index = Handle
 M.HandleClass = Handle
@@ -120,9 +99,7 @@ function Handle:free() if self.t then self.t:free() self.t = nil end end
 function Handle:tensor() return self.t end
 function Handle:shape() return self.rows, self.cols end
 
--- ---------------------------------------------------------------------
 --  Upload helper: accept a handle OR a flat table
--- ---------------------------------------------------------------------
 local function as_tensor(x, rows, cols, slot)
     if is_handle(x) then return x.t, true end
     local n = rows * cols
@@ -146,9 +123,7 @@ local function emit(t, rows, cols, resident)
     return out
 end
 
--- =====================================================================
 --  LEGACY-COMPATIBLE ENTRY POINTS  (signatures unchanged)
--- =====================================================================
 
 function M.matmul(a, m, k, b, n)
     local A, ah = as_tensor(a, m, k, "A")
@@ -183,9 +158,7 @@ function M.softmax_causal(x, rows, cols, scale, group)
     return emit(O, rows, cols, xh)
 end
 
--- =====================================================================
 --  Resident-mode primitives for a migrated matrix.lua / tensor2.lua
--- =====================================================================
 
 function M.gemm(hA, hB, hC, opts) luaTL.gemm_ex(hA.t, hB.t, hC.t, opts) return hC end
 function M.gemm_dx(hdY, hW, hdX, beta) luaTL.matmul_dx(hdY.t, hW.t, hdX.t, beta) return hdX end
@@ -212,13 +185,10 @@ function M.stats() return luaTL.pool_stats() end
 function M.hardware() return luaTL.hardware() end
 function M.shutdown() luaTL.finalize() end
 
--- =====================================================================
---  RESIDENT TENSOR TOOLKIT  (new; used by gpu_transformer.lua)
---
---  Nothing above this line changed.  These are thin, allocation-free
+--  RESIDENT TENSOR TOOLKIT  (used by gpu_transformer.lua)
+--  These are thin, allocation-free
 --  helpers for code that keeps EVERYTHING in VRAM for the lifetime of a
 --  model rather than for the duration of one call.
--- =====================================================================
 
 --- Element-offset pointer into a tensor's f32 storage.
 function M.offset(t, elems)

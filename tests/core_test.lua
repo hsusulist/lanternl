@@ -25,9 +25,7 @@ local function assert_equal(a, b, name, tol)
     end
 end
 
-print("=========================================")
 print("  LanternL Test Suite")
-print("=========================================")
 
 -- 1. Matrix Operations
 local A = matrix.from({1, 2, 3, 4}, 2, 2)
@@ -101,6 +99,5 @@ local y = Tensor.matmul(nan_tensor, w)
 local is_nan = (y.data.data[1] ~= y.data.data[1])
 assert_equal(is_nan, true, "NaN Detection in Forward Pass")
 
-print("=========================================")
 print(string.format("Results: %d passed, %d failed", passes, fails))
 if fails > 0 then os.exit(1) else os.exit(0) end
