@@ -265,14 +265,101 @@ function Data.new(...)
     return self
 end
 
+--- REPLACES Data:config().
+--- The old form was:
+---     self.shuffle = opts.shuffle ~= nil and opts.shuffle or self.shuffle
+--- With opts.shuffle == false that whole expression is falsy, so it fell
+--- through to `or self.shuffle` and the assignment was a no-op:
+--- Data:config{ shuffle = false } could not turn shuffling off.  Same bug on
+--- `stream`.  Explicit nil checks instead.
 function Data:config(opts)
-    opts            = opts or {}
-    self.batch_size = opts.batch_size or self.batch_size
-    self.shuffle    = opts.shuffle ~= nil and opts.shuffle or self.shuffle
-    self.stream     = opts.stream ~= nil and opts.stream or self.stream
-    self.tokenizer  = opts.tokenizer or self.tokenizer
+    opts = opts or {}
+    if opts.batch_size ~= nil then
+        if type(opts.batch_size) ~= "number" or opts.batch_size < 1 then
+            error("[ai.Data] batch_size must be a positive number", 2)
+        end
+        self.batch_size = math.floor(opts.batch_size)
+    end
+    if opts.shuffle   ~= nil then self.shuffle   = opts.shuffle and true or false end
+    if opts.stream    ~= nil then self.stream    = opts.stream and true or false end
+    if opts.tokenizer ~= nil then self.tokenizer = opts.tokenizer end
     return self
 end
+
+--- REPLACES the local read_all_lines(). Two fixes:
+---  * the old version reported nothing on a path that does not exist, so a
+---    typo'd filename silently produced an empty corpus and LMTrain then
+---    failed far away with "data is empty";
+---  * :batches() and :count() each called it, doubling full-corpus disk I/O
+---    on a large dataset. Cached.
+local function read_all_lines(self)
+    if self._lines then return self._lines end
+    local files, lines, missing = self.files, {}, {}
+    for _, file in ipairs(files) do
+        if file:match("%.parquet") then
+            print("[ai.Data] Parsing Parquet binary: " .. file .. " ...")
+            for _, l in ipairs(extract_text_from_binary(file)) do
+                table.insert(lines, l)
+            end
+        else
+            local f = io.open(file, "r")
+            if f then
+                for line in f:lines() do
+                    if line ~= "" then table.insert(lines, line) end
+                end
+                f:close()
+            else
+                table.insert(missing, file)
+            end
+        end
+    end
+    if #missing > 0 then
+        error("[ai.Data] cannot open: " .. table.concat(missing, ", "), 3)
+    end
+    self._lines = lines
+    return lines
+end
+
+--- REPLACES Data:batches().  `i` in the loop was unused; the tokenizer branch
+--- also silently produced empty sequences for blank-ish lines, which LMTrain
+--- then rejected one by one -- filtered here instead.
+function Data:batches()
+    local src = read_all_lines(self)
+    local lines = {}
+    for i = 1, #src do lines[i] = src[i] end     -- never shuffle the cache
+    if self.shuffle then lines = shuffle_lines(lines) end
+
+    if self.tokenizer then
+        local enc = {}
+        for i = 1, #lines do
+            local ids = self.tokenizer:encode(lines[i])
+            if #ids >= 2 then enc[#enc + 1] = ids end
+        end
+        lines = enc
+    end
+
+    local batches, current = {}, {}
+    for i = 1, #lines do
+        current[#current + 1] = lines[i]
+        if #current >= self.batch_size then
+            batches[#batches + 1] = current
+            current = {}
+        end
+    end
+    if #current > 0 then batches[#batches + 1] = current end
+    return batches
+end
+
+--- REPLACES Data:count(). Also add an explicit cache reset for long sessions.
+function Data:count()
+    return #read_all_lines(self)
+end
+
+function Data:reload()
+    self._lines = nil
+    return self
+end
+
 
 setmetatable(Data, {
     __call = function(_, ...) return Data.new(...) end

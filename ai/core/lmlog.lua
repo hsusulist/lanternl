@@ -1,3 +1,11 @@
+--  lmlog.lua -- wall clock, TTY detection, stdout buffering policy and the
+--  shared progress reporter used by BOTH backends.
+--
+--  Output policy lives here (not in lmtrain.lua) because this is the only
+--  module every output path goes through.  It used to be duplicated twice
+--  in lmtrain.lua, which meant a consumer that required lmlog directly got
+--  whatever buffering libc happened to pick.
+
 local ffi = require("ffi")
 
 local L = {}
@@ -5,7 +13,7 @@ local L = {}
 local floor, exp, huge = math.floor, math.exp, math.huge
 local sformat, srep = string.format, string.rep
 
--- ---- wall clock ----
+-- ---------------------------------------------------------------- clock ----
 local now
 do
     local ok = pcall(ffi.cdef, [[
@@ -42,10 +50,50 @@ do
 end
 L.now = now
 
-pcall(ffi.cdef, "int isatty(int fd);")
-L.is_tty = (ffi.os ~= "Windows") and (pcall(function()
-    return ffi.C.isatty(1) == 1
-end) and ffi.C.isatty(1) == 1) or false
+-- ------------------------------------------------------------ tty probe ----
+-- Was written as `(A) and (pcall(f) and f()) or false`, which called
+-- isatty() twice and leaned on `or false` to normalise.  Same result,
+-- stated once.
+do
+    pcall(ffi.cdef, "int isatty(int fd);")
+    local tty = false
+    if ffi.os ~= "Windows" then
+        local ok, r = pcall(function() return ffi.C.isatty(1) end)
+        tty = ok and (r == 1)
+    end
+    local term = os.getenv("TERM")
+    if term == "dumb" then tty = false end
+    L.is_tty = tty
+end
+
+-- ------------------------------------------------- stdout buffering -------
+--  PROBLEM 4, library side.
+--
+--  On a TTY we want unbuffered so the in-place "\r" bar (which never emits
+--  a newline) appears as it is written.  On a pipe -- which is exactly what
+--  `%%script luajit` and `!luajit` both hand us -- line buffering is the
+--  right mode: every complete line is flushed atomically at the "\n", with
+--  one write(2) per line instead of one per byte.  The reporter also calls
+--  flush() explicitly after every emit, so either mode streams; "line" just
+--  costs far less on a hot loop.
+--
+--  Idempotent: safe to call from any entry point, and called on require.
+local _vbuf_done = false
+function L.setup_stdout(mode)
+    if _vbuf_done and mode == nil then return end
+    _vbuf_done = true
+    mode = mode or (L.is_tty and "no" or "line")
+    pcall(function() io.stdout:setvbuf(mode) end)
+    return mode
+end
+L.setup_stdout()
+
+--- Default emit interval.  A piped run has no in-place overwrite, so every
+--- update is a permanent line; 0.2s over a 4h run is ~72k lines of notebook
+--- output.  Slower default off-TTY, still live.
+function L.default_interval()
+    return L.is_tty and 0.2 or 1.0
+end
 
 local BAR = {
     [1] = { fill = "#", empty = "-" },
@@ -68,20 +116,38 @@ function L.fmt_count(n)
     return sformat("%d", n)
 end
 
---  Reporter object
+function L.fmt_bytes(n)
+    if n >= 1073741824 then return sformat("%.2f GB", n / 1073741824) end
+    if n >= 1048576    then return sformat("%.1f MB", n / 1048576) end
+    if n >= 1024       then return sformat("%.1f KB", n / 1024) end
+    return sformat("%d B", n)
+end
+
+-- --------------------------------------------------------- reporter -------
 local R = {}
 R.__index = R
 
+--- The reporter that currently owns the cursor, if any.  L.say() routes
+--- through it so a library message can never land in the middle of an
+--- in-place bar.
+L.active = nil
+
 --- opts: total_steps, bar_style, bar_len, interval (seconds),
----       inplace (bool), stream (io handle)
+---       inplace (bool), force_inplace (bool), stream (io handle)
 function L.new(opts)
     opts = opts or {}
     local self = setmetatable({}, R)
     self.total_steps = opts.total_steps or 0
     self.bar_style   = opts.bar_style or 1
     self.bar_len     = opts.bar_len or 20
-    self.interval    = opts.interval or 0.2
-    self.inplace     = (opts.inplace ~= false) and L.is_tty
+    self.interval    = opts.interval or L.default_interval()
+    -- force_inplace lets a caller opt into "\r" rendering on a pipe (some
+    -- terminals-in-a-notebook handle it); default stays TTY-gated.
+    if opts.force_inplace then
+        self.inplace = true
+    else
+        self.inplace = (opts.inplace ~= false) and L.is_tty
+    end
     self.out         = opts.stream or io.stdout
     self.t0          = now()
     self.last_emit   = -1e9
@@ -90,6 +156,7 @@ function L.new(opts)
     self.rate        = 0
     self.width       = 0
     self.dirty       = false
+    L.active = self
     return self
 end
 
@@ -179,6 +246,17 @@ end
 function R:finish()
     if self.dirty then self.out:write("\n") self.dirty = false self.width = 0 end
     self.out:flush()
+    if L.active == self then L.active = nil end
+end
+
+--- Module-level message.  Routes through the live reporter when there is
+--- one so it cannot land mid-bar; otherwise a plain flushed write.  Both
+--- backends now use this instead of bare print()/io.write().
+function L.say(text)
+    local a = L.active
+    if a then return a:say(text) end
+    io.stdout:write(text, "\n")
+    io.stdout:flush()
 end
 
 return L

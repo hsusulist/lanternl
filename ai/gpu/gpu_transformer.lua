@@ -733,27 +733,118 @@ function Model:maybe_capture()
 end
 
 --- GPU-to-GPU snapshot (no CPU memory used!)
-function Model:snapshot()
-    local snap = {}
+--  REPLACES Model:snapshot() and Model:restore(), and ADDS
+--  Model:release_snapshot(), Model:read_param(), Model:write_param().
+--  Model:free() is also replaced.
+
+--- GPU-to-GPU snapshot (no CPU memory used).
+--- Pass the previous snapshot back in to REUSE its buffers.  The old version
+--- allocated a fresh full parameter set on every call and let GC reclaim the
+--- previous one, so on a 134M model each improvement leaked 536 MB of VRAM
+--- until a collection happened to run -- an OOM risk on exactly the hardware
+--- the GPU-to-GPU path exists to protect.
+function Model:snapshot(reuse)
+    if self.freed then error("gpu_transformer: snapshot() on a freed model", 2) end
+    local snap = reuse
+    -- Only reuse a snapshot whose shapes still match this model.
+    if snap then
+        local ok = (snap.owner == self) and (#snap == #self.params)
+        if not ok then self:release_snapshot(snap); snap = nil end
+    end
+    if not snap then
+        snap = { owner = self }
+        for i = 1, #self.params do
+            local p = self.params[i]
+            snap[i] = adapter.alloc(p.rows, p.cols)
+        end
+    end
     for i = 1, #self.params do
         local p = self.params[i]
-        local h = adapter.alloc(p.rows, p.cols)
-        -- Device-to-device copy
-        luaTL.check(C.luaTL_gpu_copy(p.w.t.data, h.t.data, p.nelem), "snapshot copy")
-        snap[i] = h
+        luaTL.check(C.luaTL_gpu_copy(p.w.t.data, snap[i].t.data, p.nelem), "snapshot copy")
     end
     return snap
 end
 
 function Model:restore(snap)
     if not snap then return false end
+    if self.freed then error("gpu_transformer: restore() on a freed model", 2) end
+    if snap.owner ~= nil and snap.owner ~= self then
+        error("gpu_transformer: restore() was handed a snapshot taken from a different "
+              .. "model instance (its device buffers may already be freed)", 2)
+    end
     for i = 1, #self.params do
         if snap[i] then
-            luaTL.check(C.luaTL_gpu_copy(snap[i].t.data, self.params[i].w.t.data, self.params[i].nelem), "restore copy")
+            luaTL.check(C.luaTL_gpu_copy(snap[i].t.data, self.params[i].w.t.data,
+                        self.params[i].nelem), "restore copy")
         end
     end
     return true
 end
+
+--- Deterministically give a snapshot's VRAM back.
+function Model:release_snapshot(snap)
+    if type(snap) ~= "table" then return false end
+    for i = 1, #snap do
+        local h = snap[i]
+        if type(h) == "table" and h.free then pcall(function() h:free() end) end
+        snap[i] = nil
+    end
+    snap.owner = nil
+    return true
+end
+
+--- Stream elements [from, from+count-1] (1-indexed) of parameter i into the
+--- 0-indexed float buffer `dst`.  Lets lmio serialise a 134M-parameter model
+--- in constant host memory instead of materialising a giant Lua table.
+function Model:read_param(i, from, count, dst)
+    if self.freed then error("gpu_transformer: read_param() on a freed model", 2) end
+    local p = self.params[i]
+    if not p then error(sformat("gpu_transformer: no parameter %d", i), 2) end
+    if from < 1 or (from + count - 1) > p.nelem then
+        error(sformat("gpu_transformer: read_param range %d..%d outside parameter %d (%d elems)",
+              from, from + count - 1, i, p.nelem), 2)
+    end
+    luaTL.check(C.luaTL_download_f32(poff(p.w.t, from - 1), dst, count), "param.download")
+    return count
+end
+
+--- Inverse of read_param.  Built only from calls already proven in this file:
+--- luaTL.wrap() for a non-owning view and :upload() for the H2D copy.
+function Model:write_param(i, from, count, src)
+    if self.freed then error("gpu_transformer: write_param() on a freed model", 2) end
+    local p = self.params[i]
+    if not p then error(sformat("gpu_transformer: no parameter %d", i), 2) end
+    if from < 1 or (from + count - 1) > p.nelem then
+        error(sformat("gpu_transformer: write_param range %d..%d outside parameter %d (%d elems)",
+              from, from + count - 1, i, p.nelem), 2)
+    end
+    -- Keep the view in a live local for the whole call: it is non-owning, and
+    -- letting it become garbage mid-upload is the classic use-after-free here.
+    local view = luaTL.wrap(poff(p.w.t, from - 1), 1, count, F32)
+    view:upload(src, count)
+    -- Loading new weights invalidates any captured graph's assumptions about
+    -- nothing else having moved; the graph itself is still valid (it holds
+    -- device pointers, which are unchanged), so no re-capture is needed.
+    return count
+end
+
+function Model:free()
+    if self.freed then return end
+    self.freed = true
+    if self.p_step then pcall(function() self.p_step:free_graph() end) end
+    self.p_zero, self.p_fwd, self.p_step, self.p_opt = nil, nil, nil, nil
+    self.graph_ready = false
+    for i = 1, #self._keep do
+        local h = self._keep[i]
+        if type(h) == "table" and h.free then pcall(function() h:free() end) end
+    end
+    for i = 1, #self.params do
+        local pp = self.params[i]
+        pp.w:free(); pp.g:free(); pp.m:free(); pp.v:free()
+    end
+    self._keep, self.params = {}, {}
+end
+
 
 function Model:parameters() return self.params end
 
