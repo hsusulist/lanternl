@@ -883,18 +883,5 @@ function Model:last_step_ms()
     return self.p_step.h.last_ms
 end
 
-function Model:free()
-    if self.p_step then self.p_step:free_graph() end
-    self.p_zero, self.p_fwd, self.p_step, self.p_opt = nil, nil, nil, nil
-    for i = 1, #self._keep do
-        local h = self._keep[i]
-        if type(h) == "table" and h.free then h:free() end
-    end
-    for i = 1, #self.params do
-        local pp = self.params[i]
-        pp.w:free(); pp.g:free(); pp.m:free(); pp.v:free()
-    end
-    self._keep, self.params = {}, {}
-end
 
 return GT
