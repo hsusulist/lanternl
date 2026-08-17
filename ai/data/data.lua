@@ -185,7 +185,7 @@ local function extract_text_from_binary(file)
         else
             if #current_word > 0 then
                 local word = table.concat(current_word)
-                if #word > 2 and not word:match("^[\x00-\xff]+$") then
+                if #word > 2 then
                     if lines[#lines] then
                         lines[#lines] = lines[#lines] .. " " .. word
                     else
